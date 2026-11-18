@@ -98,6 +98,7 @@ class StillFilter:
     def __init__(self) -> None:
         self.held: np.ndarray | None = None  # thumbnail of the last picture passed
         self.last: np.ndarray | None = None  # thumbnail of the last frame received
+        self.step = 0.0  # the last frame's difference from the frame received just before it (for the statistics)
 
     def is_new(self, rgb: np.ndarray) -> bool:
         thumb = rgb[::16, ::16].astype(np.int16)
@@ -105,7 +106,8 @@ class StillFilter:
         if self.held is None:
             self.held = thumb
             return True
-        if np.abs(thumb - last).mean() >= STEP_LEVEL or np.abs(thumb - self.held).mean() >= STILL_LEVEL:
+        self.step = float(np.abs(thumb - last).mean())
+        if self.step >= STEP_LEVEL or np.abs(thumb - self.held).mean() >= STILL_LEVEL:
             self.held = thumb
             return True
         return False
@@ -125,6 +127,18 @@ class TapSource:
         self.w, self.h = self.src.w, self.src.h
         self.fps = 30.0  # the game's rate; the stream itself is 60 Hz
         self.still = 0  # frames skipped as the same picture as the one before
+        self.recv = self.size_dup = self.passed = 0  # per second, for snapshot(): stream frames, repeats by size, passed on
+        self.steps_pass: list = []  # the difference from the frame before, of the frames passed on / of the ones skipped
+        self.steps_skip: list = []
+
+    def snapshot(self) -> dict:
+        """What the filters did since the last call (the worker sends it to the window once a second)."""
+        q = lambda v, f: round(sorted(v)[int(len(v) * f)], 2) if v else None
+        out = {"recv": self.recv, "size_dup": self.size_dup, "still": len(self.steps_skip), "passed": self.passed,
+               "pass": [q(self.steps_pass, f) for f in (0.1, 0.5, 0.9)], "skip": [q(self.steps_skip, f) for f in (0.5, 0.9)]}
+        self.recv = self.size_dup = self.passed = 0
+        self.steps_pass, self.steps_skip = [], []
+        return out
 
     def __iter__(self):
         from framegen.io import Tick
@@ -132,7 +146,9 @@ class TapSource:
         for tick in self.src:
             if not isinstance(tick, Tick):  # a Waiting: the stream stalled for a moment
                 continue
+            self.recv += 1
             if tick.new_hint is False:  # a repeat of the frame before
+                self.size_dup += 1
                 continue
             rgb = tick.frame
             # On a near-still screen (a menu) every compressed frame is tiny, so the size says "new" for nearly all of
@@ -140,7 +156,10 @@ class TapSource:
             # there is nothing to interpolate between two equal pictures anyway.
             if not filt.is_new(rgb):
                 self.still += 1
+                self.steps_skip.append(filt.step)
                 continue
+            self.passed += 1
+            self.steps_pass.append(filt.step)
             yield rgb, tick.t_arrival, tick.damaged
 
     def close(self) -> None:
@@ -224,7 +243,11 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
         prev_pts = 0.0
         skipped = 0
         gaps: deque = deque(maxlen=8)  # recent gaps between real frames: where an extrapolated frame falls in time
+        t_snap = time.monotonic()
         for k, item in enumerate(src):
+            if live and time.monotonic() - t_snap >= 1.0:
+                t_snap = time.monotonic()
+                ready_q.put(("tapstat", live_src.snapshot()))
             if live:  # a real frame exists from the moment it arrived
                 frame, t_arr, damaged = item
                 pts = t_arr - t0
@@ -413,6 +436,12 @@ def main() -> None:
                     break
                 if msg[0] == "error":
                     raise RuntimeError(msg[1])
+                if msg[0] == "tapstat":
+                    t = msg[1]
+                    print(f"   tap: stream {t['recv']}/s, repeats by size {t['size_dup']}, repeats by picture {t['still']}, "
+                          f"passed on {t['passed']} | step of passed p10/p50/p90 {t['pass']}, of skipped p50/p90 {t['skip']}",
+                          flush=True)
+                    continue
                 _, s, pts, is_ai, ms, base = msg
                 if is_stale(base, newest_real, pts):
                     free_q.put(s)  # a real frame newer than its base comes first: it would go back in time
