@@ -151,7 +151,9 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      la somma (0,35). Ora `STEP_REL` 0,2, `STEP_MAX` 2,0, la somma richiede anche `2 * level`, e la media della velocità
      parte come media semplice. Le righe `tap:` hanno un istogramma dei passi di tutti i frame (<.1 <.3 <1 <3 <10
      >=10): un gioco a 30 fps raddoppiato mostra due gruppi, uno a 60 fps uno solo. Flusso finto: 30 fps -> 30
-     ripetuti/s scartati, AI accesa; 60 fps -> AI spenta, ritardo ~24 ms. **Da verificare con la PS5 a 30 Mbps.**
+     ripetuti/s scartati, AI accesa; 60 fps -> AI spenta, ritardo ~24 ms. **Verificato con la PS5 a 30 Mbps (183 s)**:
+     istogramma a due gruppi (~30/s sotto 1, ripetuti con rumore 0,1-1,0; ~30/s sopra 3, le immagini), gioco ~30 fps,
+     AI accesa in tutti i secondi, 60,9 fps mostrati, `ready` 35/42 ms, ritardo 50 ms, `late` 0, `dropped` 0.
      **Provato dal vivo con la PS5 (18 nov): extrap scartato.** Input più rapido (ritardo adattivo ~33 ms contro ~49 di
      interp) ma "sembra di giocare a 30 fps". Nel log gli fps mostrati erano 66-83 e `late` 0, quindi non era la
      finestra; `stale` ~7/s (fino a 14): circa un fotogramma AI su cinque cadeva dopo il reale successivo e veniva
