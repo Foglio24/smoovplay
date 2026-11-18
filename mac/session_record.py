@@ -398,12 +398,12 @@ def summary(rows: list[dict]) -> str:
            for r in play if r["t_s"] - t0 >= WARMUP_S and r["t_s"] <= play[-1]["t_s"] - 5
            and r.get("mem_play_main_mb")]
     if len(mem) > 30:
-        xs, ys = [m[0] / 60 for m in mem], [m[1] for m in mem]
-        mx, my = statistics.fmean(xs), statistics.fmean(ys)
-        den = sum((x - mx) ** 2 for x in xs) or 1
-        slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den
-        out.append(f"play.py memory (main + worker): {ys[0]:.0f} MB -> {ys[-1]:.0f} MB, max {max(ys):.0f} MB, "
-                   f"trend {slope:+.1f} MB/min.")
+        ys = [m[1] for m in mem]
+        first = statistics.median([y for t, y in mem if t <= mem[0][0] + 120])
+        last = statistics.median([y for t, y in mem if t >= mem[-1][0] - 120])
+        mins = (mem[-1][0] - mem[0][0]) / 60
+        out.append(f"play.py memory (main + worker), median of the first vs last 2 minutes: {first:.0f} MB -> "
+                   f"{last:.0f} MB over {mins:.1f} min (max {max(ys):.0f} MB).")
     ch = nums(play, "mem_chiaki_mb")
     if ch:
         out.append(f"chiaki-ng memory: {ch[0]:.0f} MB -> {ch[-1]:.0f} MB, max {max(ch):.0f} MB.")
