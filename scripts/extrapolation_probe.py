@@ -116,6 +116,46 @@ def translation_test(model, tens, back, frames, dev) -> None:
     print("   identical pair, (f1-f0): worst |shift| %.3f px" % max(max(abs(x), abs(y)) for x, y in ident))
 
 
+def hud_test(model, tens, back, frames, g: int) -> None:
+    """A static interface over a moving picture must stay put. Pastes the same patch (a strip of the clip's top-left
+    and one of its bottom-left corner: world texture, standing in for HUD elements) at the same place into both real frames and into the real frame being predicted,
+    then measures how far the patch ends up from where it really is in the extrapolated frame (and in the interpolated
+    one, for comparison). The world moves under it exactly as in the clip; the patch never moves."""
+    boxes = {"top-left strip": (30, 10, 570, 90), "bottom-left patch": (24, 960, 210, 1050)}
+    patches = {n: frames[0][y0:y1, x0:x1].copy() for n, (x0, y0, x1, y1) in boxes.items()}
+
+    def stamp(img):
+        img = img.copy()
+        for n, (x0, y0, x1, y1) in boxes.items():
+            img[y0:y1, x0:x1] = patches[n]
+        return img
+
+    res: dict = {}
+    with torch.no_grad():
+        for i in range(0, len(frames) - 2 * g - 1, 6):
+            fa, fb = stamp(frames[i]), stamp(frames[i + g])
+            mid_gt, nxt_gt = stamp(frames[i + g // 2]), stamp(frames[i + g + g // 2])
+            interp, f0, f1 = flows_and_interp(model, tens(fa), tens(fb))
+            e = back(extrap(model, tens(fb), f0, f1, 0.5, False))
+            moving = float(np.abs(frames[i + g].astype(np.float32) - frames[i].astype(np.float32)).mean())
+            for n, (x0, y0, x1, y1) in boxes.items():
+                for kind, img in (("extrap", e), ("interp", back(interp))):
+                    crop = img[y0:y1, x0:x1]
+                    res.setdefault((n, kind), []).append((psnr(crop, patches[n]), *shift_of_crop(crop, patches[n]), moving))
+    print("static interface over moving gameplay: the pasted patch vs where it really is (shift in px; 0 = it stayed put)")
+    for (n, kind), v in res.items():
+        v = np.array(v)
+        print(f"   {n:13s} {kind:7s} PSNR {v[:, 0].mean():5.1f} dB (worst {v[:, 0].min():5.1f})   shift x {np.abs(v[:, 1]).mean():.2f}"
+              f" (worst {np.abs(v[:, 1]).max():.2f})  y {np.abs(v[:, 2]).mean():.2f} (worst {np.abs(v[:, 2]).max():.2f})")
+
+
+def shift_of_crop(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
+    import cv2
+    g = lambda x: cv2.cvtColor(x, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    (dx, dy), _ = cv2.phaseCorrelate(g(a), g(b), cv2.createHanningWindow(g(a).shape[::-1], cv2.CV_32F))
+    return dx, dy
+
+
 def psnr(x: np.ndarray, y: np.ndarray) -> float:
     mse = float(np.mean((x.astype(np.float32) - y.astype(np.float32)) ** 2))
     return 99.0 if mse == 0 else 10 * math.log10(255.0 ** 2 / mse)
@@ -157,6 +197,7 @@ def main() -> None:
     rows = []
     with torch.no_grad():
         translation_test(model, tens, back, frames, dev)
+        hud_test(model, tens, back, frames, g)
         for i in range(0, len(frames) - 2 * g - 1, 6):
             fa, fb = frames[i], frames[i + g]
             mid_gt, nxt_gt = frames[i + g // 2], frames[i + g + g // 2]  # halfway between them / half a gap after b

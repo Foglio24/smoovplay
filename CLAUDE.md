@@ -125,6 +125,11 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      cambia di colpo quando il moto cambia (frenata, scatto): il reale successivo "corregge". Non verificato dal
      vivo con la PS5**; `--mult 3` (t=1/3, 2/3) non validato. Default resta `interp`; sul Desktop ci sono
      `SmoovPlay.app` (interp) e `SmoovPlay Reattivo.app` (extrap, icona verde) per il confronto (`mac/make_app.sh`).
+     Interfaccia fissa sopra movimento (sonda, patch incollate identiche in tutti i fotogrammi): non si sposta (scarto
+     medio 0,04-0,11 px, peggiore 0,49) ma nel caso peggiore si ammorbidisce un po' (PSNR peggiore 24-30 dB contro 36-38
+     di interp: il flusso "perde" 0,3-0,6 px dentro la patch). Le patch erano texture del mondo, non una vera barra HUD:
+     da guardare a occhio su HUD e testo. Una coppia che copre k fotogrammi di gioco usa `t / k` (k arrotondato, max 4).
+     I log delle due app sono separati (`play.log`/`play_extrap.log`, `SMOOVPLAY_LOG_TAG`).
      Se `extrap` piace ma si vede un tremolio su schermo fermo, rimisurare `MOTION_BIAS` con la sonda e cambiare
      `ext_bias` in `scripts/coreml_mac.py` (e il nome del pacchetto).
      Aperto: in gioco ~56-60 fps mostrati, late 0, ma `dropped` ~17-23/s (fotogrammi che cadono nello stesso tick di

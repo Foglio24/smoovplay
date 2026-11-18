@@ -254,13 +254,16 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
                 # is the motion over one game frame), put where the game's pace says (the typical gap, not this
                 # arrival's jitter). The window drops it if a newer real frame turns out to come before it.
                 gap = sorted(gaps)[len(gaps) // 2] if gaps else 1.0 / fps
+                # A pair that spans k game frames (one was lost, or never passed the still filter) has k frames of motion
+                # between it: the model's t is a fraction of that, so t / k. k is rounded, so arrival jitter can't move it.
+                k_span = min(4, max(1, round((pts - prev_pts) / gap)))
                 for j in range(1, n + 1):
                     t = j / (n + 1)
                     s = slot()
                     if s is None:
                         return
                     a = time.perf_counter()
-                    frames[s][:] = rife.interpolate(prev_img, img, t)
+                    frames[s][:] = rife.interpolate(prev_img, img, t / k_span if args.mode == "extrap" else t)
                     ms = (time.perf_counter() - a) * 1000
                     if args.mode == "extrap":
                         ready_q.put(("frame", s, pts + gap * t, True, ms, pts))

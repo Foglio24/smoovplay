@@ -38,22 +38,22 @@ trap 'clean' EXIT
 
 cd "$REPO" || exit 1
 # Prima il programma AI, che aspetta lo stream; poi chiaki-ng, che si collega alla PS5.
-"$PY" -W ignore -u mac/play.py --tap ${SMOOVPLAY_ARGS:-} > "$LOGDIR/play.log" 2>&1 &
+"$PY" -W ignore -u mac/play.py --tap ${SMOOVPLAY_ARGS:-} > "$LOGDIR/play${SMOOVPLAY_LOG_TAG:-}.log" 2>&1 &
 PLAY=$!
 # chiaki-ng parte solo quando il programma AI ha caricato il modello e aspetta lo stream: l'intestazione del codec
 # arriva una volta sola, all'inizio dello stream, e se manca l'immagine resta a 0 fps.
 for _ in $(seq 1 180); do
-    grep -q "ready, waiting for the stream" "$LOGDIR/play.log" 2>/dev/null && break
-    kill -0 "$PLAY" 2>/dev/null || { notify "Il programma AI si è fermato. Dettagli: $LOGDIR/play.log"; exit 1; }
+    grep -q "ready, waiting for the stream" "$LOGDIR/play${SMOOVPLAY_LOG_TAG:-}.log" 2>/dev/null && break
+    kill -0 "$PLAY" 2>/dev/null || { notify "Il programma AI si è fermato. Dettagli: $LOGDIR/play${SMOOVPLAY_LOG_TAG:-}.log"; exit 1; }
     sleep 1
 done
-CHIAKI_FRAMETAP=1 "$CHIAKI" --opengl --exit-app-on-stream-exit stream "$PS5_NAME" "$PS5_HOST" > "$LOGDIR/chiaki.log" 2>&1 &
+CHIAKI_FRAMETAP=1 "$CHIAKI" --opengl --exit-app-on-stream-exit stream "$PS5_NAME" "$PS5_HOST" > "$LOGDIR/chiaki${SMOOVPLAY_LOG_TAG:-}.log" 2>&1 &
 CHI=$!
 
 # Finché girano tutti e due. Se chiaki-ng finisce (PS5 spenta, connessione persa) o chiudi la finestra AI (Q), si chiude tutto.
 while kill -0 "$PLAY" 2>/dev/null && kill -0 "$CHI" 2>/dev/null; do sleep 1; done
 if ! kill -0 "$CHI" 2>/dev/null && kill -0 "$PLAY" 2>/dev/null; then
-    if ! grep -q "Frame tap on" "$LOGDIR/chiaki.log" 2>/dev/null; then
-        notify "Non riesco a collegarmi alla PS5 ($PS5_NAME, $PS5_HOST). È accesa (o in standby) e con Remote Play attivo? Dettagli: $LOGDIR/chiaki.log"
+    if ! grep -q "Frame tap on" "$LOGDIR/chiaki${SMOOVPLAY_LOG_TAG:-}.log" 2>/dev/null; then
+        notify "Non riesco a collegarmi alla PS5 ($PS5_NAME, $PS5_HOST). È accesa (o in standby) e con Remote Play attivo? Dettagli: $LOGDIR/chiaki${SMOOVPLAY_LOG_TAG:-}.log"
     fi
 fi
