@@ -100,6 +100,14 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      anche con il fotogramma *appena ricevuto* (`STEP_LEVEL` 0,04: un ripetuto differisce ~0) e tiene la somma 0,35.
      Test: `tests/test_still_filter.py`. **Non verificato dal vivo**: 0,04 presuppone che i ripetuti del PS5 (HEVC)
      differiscano meno di così; se `fps shown` resta a 60 su schermo fermo e l'AI va in ritardo, alzare `STEP_LEVEL`.
+     **Ciclo di presentazione (18 nov)**: `dropped` 20-30/s non era la jitter d'arrivo ma `swap_interval(1)`: su macOS
+     `swap_buffers` bloccava 8-11 ms (misurato con un benchmark GL: ~95 giri/s su schermo a 240 Hz; l'upload della
+     texture costa 1-2 ms e non c'entra). Il log offriva ~105 fotogrammi/s (shown+dropped) contro 60-75 mostrati; i
+     fotogrammi dovuti nello stesso giro venivano scartati tranne l'ultimo. Ora `swap_interval(0)`, si disegna solo
+     quando c'è un fotogramma dovuto (o la finestra va ridisegnata) e il ciclo dorme fino al prossimo (<= 2 ms);
+     `--vsync` ripristina il vecchio ciclo. Con la clip demo: 60,0 fps fissi (prima 57,7-60,7). **Non verificato dal
+     vivo con la PS5**: atteso `dropped` ~0 e movimento più regolare; se si vede tearing o la finestra non si aggiorna,
+     provare `--vsync`.
      Aperto: in gioco ~56-60 fps mostrati, late 0, ma `dropped` ~17-23/s (fotogrammi che cadono nello stesso tick di
      schermo a 240 Hz): serve un ritmo di presentazione regolare. Qualità dell'immagine in sé (bitrate H.265 di chiaki-ng,
      RIFE a movimento dimezzato, artefatti) non ancora valutata a occhio.

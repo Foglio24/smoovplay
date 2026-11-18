@@ -266,6 +266,9 @@ def main() -> None:
                          "lean3 = lean2 with the output offset corrected (14.3 ms; the AI frame no longer sits ~0.17 px "
                          "off the real frames, which showed as a tremble on still pictures)")
     ap.add_argument("--test-blend", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--vsync", action="store_true",
+                    help="wait for the screen's vsync on every loop, as before (the loop then runs at only ~100 a second "
+                         "on macOS, however fast the screen is, and drops frames that fall in the same loop)")
     ap.add_argument("--delay", type=float, default=None,
                     help="ms from a frame's arrival to the screen (default: 80 for a video; with --tap it adapts, "
                          "as low as the frames allow)")
@@ -315,7 +318,10 @@ def main() -> None:
     k = min(1.0, 0.8 * mode.size.width / w, 0.8 * mode.size.height / h)
     win = glfw.create_window(int(w * k), int(h * k), "SmoovPlay Mac prototype", None, None)
     glfw.make_context_current(win)
-    glfw.swap_interval(1)
+    # With vsync on, macOS blocks swap_buffers for 8-11 ms (measured: ~95 loops a second on a 240 Hz screen) and the
+    # frames due within one loop were dropped but the last. Off, a frame goes to the compositor the moment it is due and
+    # the loop sleeps in between; a window has no tearing on macOS either way.
+    glfw.swap_interval(1 if a.vsync else 0)
 
     GL.glEnable(GL.GL_TEXTURE_2D)
     tex = GL.glGenTextures(1)
@@ -347,6 +353,9 @@ def main() -> None:
             state["full"] = not state["full"]
 
     glfw.set_key_callback(win, on_key)
+    redraw = {"need": True}  # the window was exposed or resized: draw the picture again even if no new one is due
+    glfw.set_window_refresh_callback(win, lambda _w: redraw.update(need=True))
+    glfw.set_framebuffer_size_callback(win, lambda _w, _x, _y: redraw.update(need=True))
     if a.tap is not None:  # chiaki-ng's own window is open behind: ours stays in front of it
         glfw.set_window_attrib(win, glfw.FLOATING, True)
 
@@ -404,20 +413,26 @@ def main() -> None:
                 stats["shown"] += 1
                 have_frame = True
 
-            fw, fh = glfw.get_framebuffer_size(win)
-            GL.glViewport(0, 0, fw, fh)
-            GL.glClearColor(0, 0, 0, 1)
-            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
-            if have_frame and fw and fh:
-                sx = min(1.0, (fw / fh) / (w / h))
-                sy = min(1.0, (w / h) / (fw / fh))
-                GL.glBegin(GL.GL_QUADS)
-                for u, v, x, y in ((0, 1, -sx, -sy), (1, 1, sx, -sy), (1, 0, sx, sy), (0, 0, -sx, sy)):
-                    GL.glTexCoord2f(u, v)
-                    GL.glVertex2f(x, y)
-                GL.glEnd()
-            glfw.swap_buffers(win)
+            if chosen is not None or redraw["need"] or a.vsync:
+                redraw["need"] = False
+                fw, fh = glfw.get_framebuffer_size(win)
+                GL.glViewport(0, 0, fw, fh)
+                GL.glClearColor(0, 0, 0, 1)
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+                if have_frame and fw and fh:
+                    sx = min(1.0, (fw / fh) / (w / h))
+                    sy = min(1.0, (w / h) / (fw / fh))
+                    GL.glBegin(GL.GL_QUADS)
+                    for u, v, x, y in ((0, 1, -sx, -sy), (1, 1, sx, -sy), (1, 0, sx, sy), (0, 0, -sx, sy)):
+                        GL.glTexCoord2f(u, v)
+                        GL.glVertex2f(x, y)
+                    GL.glEnd()
+                glfw.swap_buffers(win)
             glfw.poll_events()
+            if not a.vsync and chosen is None:
+                # Nothing was due: sleep until the next frame is (or 2 ms, to take in the ones the worker sends).
+                nxt = pending[0][1] - time.monotonic() if pending else 0.002
+                time.sleep(max(0.0002, min(0.002, nxt - 0.0004)))
 
             el = now - stats["t"]
             if el >= 1.0:
