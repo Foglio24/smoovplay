@@ -195,21 +195,25 @@ class PowerMetrics(threading.Thread):
                     return round(float(d[energy_key]) / 1000.0 / el, 2)  # mJ over the interval
             return None
 
+        def mhz(v) -> int:  # CPU clusters report Hz, the GPU MHz (macOS 27)
+            v = float(v)
+            return round(v / 1e6 if v > 1e5 else v)
+
         clusters = []
         p_max = None
         for c in proc.get("clusters", []) or []:
-            mhz = round(float(c.get("freq_hz", 0)) / 1e6)
+            f_mhz = mhz(c.get("freq_hz", 0))
             name = str(c.get("name", "?")).replace("-Cluster", "").replace("_CLUSTER", "")
-            clusters.append(f"{name}:{mhz}")
-            if not name.upper().startswith("E"):
-                p_max = mhz if p_max is None else max(p_max, mhz)
+            clusters.append(f"{name}:{f_mhz}")
+            if not name.upper().startswith("E"):  # M5 Pro: P0, P1 and S clusters, no E
+                p_max = f_mhz if p_max is None else max(p_max, f_mhz)
         busy = None
         if "idle_ratio" in gpu:
             busy = round((1.0 - float(gpu["idle_ratio"])) * 100.0, 1)
         return {
             "cpu_clusters_mhz": " ".join(clusters),
             "cpu_p_max_mhz": p_max,
-            "gpu_mhz": round(float(gpu["freq_hz"]) / 1e6) if "freq_hz" in gpu else None,
+            "gpu_mhz": mhz(gpu["freq_hz"]) if "freq_hz" in gpu else None,
             "gpu_busy_pct": busy,
             "cpu_w": watts("cpu_power", "cpu_energy", proc),
             "gpu_w": watts("gpu_power", "gpu_energy", proc, gpu),
