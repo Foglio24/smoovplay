@@ -130,6 +130,13 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      di interp: il flusso "perde" 0,3-0,6 px dentro la patch). Le patch erano texture del mondo, non una vera barra HUD:
      da guardare a occhio su HUD e testo. Una coppia che copre k fotogrammi di gioco usa `t / k` (k arrotondato, max 4).
      I log delle due app sono separati (`play.log`/`play_extrap.log`, `SMOOVPLAY_LOG_TAG`).
+     **Provato dal vivo con la PS5 (18 nov): extrap scartato.** Input più rapido (ritardo adattivo ~33 ms contro ~49 di
+     interp) ma "sembra di giocare a 30 fps". Nel log gli fps mostrati erano 66-83 e `late` 0, quindi non era la
+     finestra; `stale` ~7/s (fino a 14): circa un fotogramma AI su cinque cadeva dopo il reale successivo e veniva
+     scartato, e 12 AI saltati per ritardo. Causa non verificata (ipotesi: moto sottostimato su spostamenti grandi, o
+     cadenza irregolare per gli scarti). Il default resta `interp`. Stesso giro con interp: 70 fps, ritardo 49 ms,
+     `late` 0, `dropped` 0 (prima 20-30/s: ciclo senza vsync + StillFilter verificati). Per riprovare extrap servirebbe
+     capire prima da dove vengono gli `stale` (gap tipico contro jitter d'arrivo).
      Se `extrap` piace ma si vede un tremolio su schermo fermo, rimisurare `MOTION_BIAS` con la sonda e cambiare
      `ext_bias` in `scripts/coreml_mac.py` (e il nome del pacchetto).
      Aperto: in gioco ~56-60 fps mostrati, late 0, ma `dropped` ~17-23/s (fotogrammi che cadono nello stesso tick di
