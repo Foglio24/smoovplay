@@ -34,9 +34,11 @@ RES = {"720p": (1280, 720), "1080p": (1920, 1080)}
 SLOTS = 10  # frames in flight between the two processes
 STILL_LEVEL = 0.35  # change on a thumbnail, summed up since the last picture shown, that makes a picture new
 STEP_LEVEL = 0.04  # change on a thumbnail from the frame just before that makes a picture new, at the least (a repeat ~0)
-STEP_REL = 0.03  # ...and at a fast scene, this fraction of how much the pictures there differ (a repeat at a high bitrate
-#                  isn't exact: codec noise of ~0.06 on a thumbnail, against 5-20 between two pictures of a moving scene)
-STEP_MAX = 0.5  # ...but never more than this
+STEP_REL = 0.2  # ...and at a fast scene, this fraction of how much the frames there differ from the one before (a repeat
+#                 at a high bitrate isn't exact: codec noise of ~0.7 on a thumbnail at 30 Mbps, measured live, against
+#                 5-20 between two pictures of a moving scene; the running average counts repeats too, so it is about half
+#                 of the pictures' own step)
+STEP_MAX = 2.0  # ...but never more than this
 GAP_S = 0.09  # frames further apart than this (a still screen that started moving) get no AI frame between them
 LATE_S = 0.026  # a real frame older than this when the AI would start can't get its AI frame out in time: skipped
 AI_OFF_FPS = 50.0  # live: a game running faster than this needs no AI frames (they only add delay, and the AI can't keep up)
@@ -108,6 +110,7 @@ class StillFilter:
         self.last: np.ndarray | None = None  # thumbnail of the last frame received
         self.step = 0.0  # the last frame's difference from the frame received just before it (for the statistics)
         self.motion = 0.0  # how much the frames received lately differ from the one before (a running average)
+        self.n = 0  # frames averaged so far: a plain mean at first, so the level is right after a few frames
 
     def is_new(self, rgb: np.ndarray) -> bool:
         thumb = rgb[::16, ::16].astype(np.int16)
@@ -117,8 +120,11 @@ class StillFilter:
             return True
         self.step = float(np.abs(thumb - last).mean())
         level = min(STEP_MAX, max(STEP_LEVEL, STEP_REL * self.motion))
-        self.motion += 0.1 * (self.step - self.motion)  # over every frame received, repeats included (half of the pictures' step)
-        if self.step >= level or np.abs(thumb - self.held).mean() >= STILL_LEVEL:
+        self.n += 1
+        self.motion += max(0.1, 1.0 / self.n) * (self.step - self.motion)  # every frame, repeats too (~half a picture's step)
+        # the changes since the last picture passed must add up to STILL_LEVEL, and to more than a noisy repeat differs
+        # from its picture (twice the step level), or the repeats would pass that way
+        if self.step >= level or np.abs(thumb - self.held).mean() >= max(STILL_LEVEL, 2 * level):
             self.held = thumb
             return True
         return False
@@ -141,14 +147,17 @@ class TapSource:
         self.recv = self.size_dup = self.passed = 0  # per second, for snapshot(): stream frames, repeats by size, passed on
         self.steps_pass: list = []  # the difference from the frame before, of the frames passed on / of the ones skipped
         self.steps_skip: list = []
+        self.steps_all: list = []  # ...of every frame received (for the histogram)
 
     def snapshot(self) -> dict:
         """What the filters did since the last call (the worker sends it to the window once a second)."""
         q = lambda v, f: round(sorted(v)[int(len(v) * f)], 2) if v else None
-        out = {"recv": self.recv, "size_dup": self.size_dup, "still": len(self.steps_skip), "passed": self.passed,
+        edges = (0.1, 0.3, 1.0, 3.0, 10.0)  # histogram of every received frame's step: repeats cluster low, pictures high
+        hist = [sum(1 for v in self.steps_all if lo <= v < hi) for lo, hi in zip((0.0, *edges), (*edges, 1e9))]
+        out = {"hist": hist, "recv": self.recv, "size_dup": self.size_dup, "still": len(self.steps_skip), "passed": self.passed,
                "pass": [q(self.steps_pass, f) for f in (0.1, 0.5, 0.9)], "skip": [q(self.steps_skip, f) for f in (0.5, 0.9)]}
         self.recv = self.size_dup = self.passed = 0
-        self.steps_pass, self.steps_skip = [], []
+        self.steps_pass, self.steps_skip, self.steps_all = [], [], []
         return out
 
     def __iter__(self):
@@ -164,7 +173,9 @@ class TapSource:
             # On a near-still screen (a menu) every compressed frame is tiny, so the size says "new" for nearly all of
             # them and the AI would have twice the frames it can do. A picture that hasn't changed is a repeat, and
             # there is nothing to interpolate between two equal pictures anyway.
-            if not filt.is_new(rgb):
+            new = filt.is_new(rgb)
+            self.steps_all.append(filt.step)
+            if not new:
                 self.still += 1
                 self.steps_skip.append(filt.step)
                 continue
@@ -464,6 +475,7 @@ def main() -> None:
                     t = msg[1]
                     print(f"   tap: stream {t['recv']}/s, repeats by size {t['size_dup']}, repeats by picture {t['still']}, "
                           f"passed on {t['passed']} | step of passed p10/p50/p90 {t['pass']}, of skipped p50/p90 {t['skip']} | "
+                          f"step histogram (<.1 <.3 <1 <3 <10 >=10) {t['hist']} | "
                           f"game ~{t['game']} fps, AI {'on' if t['ai'] else 'off (game fast enough)'}",
                           flush=True)
                     continue

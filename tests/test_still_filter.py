@@ -44,13 +44,13 @@ def main() -> int:
     ok &= check("slow pan, every picture twice", emitted(doubled), range(29, 31))
     ok &= check("true still screen (60 identical frames)", emitted([pics[0]] * 60), range(1, 2))
     # a fast scene (30 fps game, each picture twice), the repeat differing a little from its picture as a stream at a
-    # high bitrate leaves it (codec noise, ~0.06 on a thumbnail): the repeats must still go, the pictures must stay
+    # high bitrate leaves it (codec noise: ~0.7 on a thumbnail, measured live at 30 Mbps): the repeats must still go, the pictures must stay
     fast = slow_pan(30, 8.0)
     rng = np.random.default_rng(2)
     noisy = []
     for pic in fast:
         noisy.append(pic)
-        flick = (rng.random(pic.shape[:2]) < 0.06)[..., None] * rng.choice([-1, 1], pic.shape[:2])[..., None]
+        flick = (rng.random(pic.shape[:2]) < 0.7)[..., None] * rng.choice([-1, 1], pic.shape[:2])[..., None]
         noisy.append(np.clip(pic.astype(np.int16) + flick, 0, 255).astype(np.uint8))
     # (a few repeats at the start get through: the scene's speed isn't known yet)
     ok &= check("fast scene, noisy repeats (30 fps game)", emitted(noisy), range(29, 34))

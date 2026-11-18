@@ -133,8 +133,8 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      **Il gioco non è a 30 fps (18 nov, 30 Mbps)**: alzato il bitrate di chiaki-ng a 30 Mbps
      (`defaults write com.chiaki.Chiaki settings.bitrate_local_ps5 -int 30000`; default 15 Mbps; per tornare
      `defaults delete ...`): immagine più pulita, ma fps mostrati 90-100, ritardo 56 ms, 97 AI saltati. Le righe `tap:`
-     (statistiche al secondo) hanno mostrato ~55 fotogrammi nuovi al secondo con passo mediano 14-20 (scena veloce):
-     il gioco girava a ~55-60 fps, non a 30 raddoppiati. Il rilevatore dei ripetuti dalla *dimensione* del frame
+     (statistiche al secondo) hanno mostrato ~55 fotogrammi "nuovi" al secondo con passo mediano 14-20; ne ho
+     concluso (sbagliando) un gioco a ~55-60 fps. Il rilevatore dei ripetuti dalla *dimensione* del frame
      compresso (`SizeRepeatDetector`) sbaglia: con una clip a 60 fps tutta di fotogrammi nuovi ne dava ~30/s per
      ripetuti (i frame "intermedi" sono più piccoli); a 15 Mbps scartava frame veri e faceva credere a un gioco a 30.
      Ora `TapSource` non si fida più della dimensione (solo contata nelle righe `tap:`): decide `StillFilter` dai
@@ -145,6 +145,13 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      25-33 ms invece di ~50. Pavimento del ritardo adattivo 30 -> 20 ms. Test: `tests/test_still_filter.py`. **Non
      verificato con la PS5 dopo la modifica**: da guardare se a ~55 fps reali senza AI l'immagine sembra meno fluida
      di prima (per riaccendere l'AI sempre: `AI_OFF_FPS` alto).
+     **Correzione (stessa sera)**: con l'AI spenta l'utente vedeva "30 fps anche se ne segna 60". Nel log, in ogni
+     secondo il 10% (a volte metà) dei fotogrammi passati aveva passo 0,55-0,8: sono i ripetuti di un gioco a 30 fps che
+     a 30 Mbps non sono identici (rumore ~0,7 sulla miniatura, non 0,06). Passavano sia per la soglia sul passo sia per
+     la somma (0,35). Ora `STEP_REL` 0,2, `STEP_MAX` 2,0, la somma richiede anche `2 * level`, e la media della velocità
+     parte come media semplice. Le righe `tap:` hanno un istogramma dei passi di tutti i frame (<.1 <.3 <1 <3 <10
+     >=10): un gioco a 30 fps raddoppiato mostra due gruppi, uno a 60 fps uno solo. Flusso finto: 30 fps -> 30
+     ripetuti/s scartati, AI accesa; 60 fps -> AI spenta, ritardo ~24 ms. **Da verificare con la PS5 a 30 Mbps.**
      **Provato dal vivo con la PS5 (18 nov): extrap scartato.** Input più rapido (ritardo adattivo ~33 ms contro ~49 di
      interp) ma "sembra di giocare a 30 fps". Nel log gli fps mostrati erano 66-83 e `late` 0, quindi non era la
      finestra; `stale` ~7/s (fino a 14): circa un fotogramma AI su cinque cadeva dopo il reale successivo e veniva
