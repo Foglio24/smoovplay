@@ -70,7 +70,13 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      Finder/`open` non passano). Trucchi: nanopb vuole il modulo Python `protobuf<6` (venv `~/src/pbvenv`, cmake
      `-DPYTHON_EXECUTABLE`); gli header di openssl@4 coprono quelli di openssl@3, quindi `brew unlink openssl@4`
      durante la compilazione e `brew link openssl@4` dopo (lo fa lo script).
-   - **Da fare**: provare con la PS5 vera (Luca): abilitare Remote Play sulla PS5, registrarla in chiaki-ng, scegliere
+   - **PS5 vera provata (18/11/2026, GTA V)**: registrata, stream H.265 1080p a 60 Hz: 59,8 fotogrammi/s, 30 nuovi/s
+     (179 nuovi / 177 ripetuti in 6 s: il rilevamento per dimensione funziona), 0 persi, intervalli di arrivo p50 13,7 /
+     p95 25 ms. `play.py --tap` a regime: ~52-55 fps mostrati, AI 22,7 ms, 0-1 in ritardo, 3-4 saltati/s; i primi secondi
+     dopo la connessione sono molto peggio (14-25 fps, ~40 in ritardo). chiaki-ng usa ~99% di un core. Se `play.py` parte
+     con uno stream già avviato resta a 0 fps: serve riavviare chiaki-ng (o chiudere/riaprire lo stream) con `play.py` in attesa.
+     Ctrl+O/Cmd+O non apre il menu in schermo intero: si chiude chiaki-ng e lo si riavvia.
+   - **Da fare**: ~~provare con la PS5 vera~~ fatto, ora ritmo/ritardo (punto 2); era: provare con la PS5 vera (Luca): abilitare Remote Play sulla PS5, registrarla in chiaki-ng, scegliere
      1080p, 60 fps, H.265; poi `bash run_play.sh --tap` PRIMA di connettere. Misurare fps mostrati e ritardo. Il filtro "fotogramma nuovo" per giochi a 60 fps veri (menu) non è gestito in `play.py`.
 2. Ottimizzazioni: codificare ogni fotogramma reale una volta sola (oggi il modello codifica entrambi a ogni
    chiamata), passare i fotogrammi come CVPixelBuffer/IOSurface invece che PIL, tarare il ritardo (oggi 80 ms).
