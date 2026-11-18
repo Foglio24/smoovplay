@@ -154,6 +154,12 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      ripetuti/s scartati, AI accesa; 60 fps -> AI spenta, ritardo ~24 ms. **Verificato con la PS5 a 30 Mbps (183 s)**:
      istogramma a due gruppi (~30/s sotto 1, ripetuti con rumore 0,1-1,0; ~30/s sopra 3, le immagini), gioco ~30 fps,
      AI accesa in tutti i secondi, 60,9 fps mostrati, `ready` 35/42 ms, ritardo 50 ms, `late` 0, `dropped` 0.
+     **Nitidezza (18 nov)**: a tutto schermo il 1080p era ingrandito a 1440p con un bilineare semplice (morbido). Ora
+     la finestra disegna con lo shader AMD CAS a 5 campioni (`CAS_FRAG` in `mac/play.py`, GLSL 1.20 sul contesto GL
+     legacy di macOS; senza shader si torna al disegno semplice). `--sharp` 0..1, default 0,5; tasto **S** acceso/spento
+     per confrontare. Fuori schermo a 2560x1440 su un fotogramma della clip: dettaglio (gradiente medio) 3,05 semplice,
+     3,93 a 0,5, 5,30 a 1,0 (Lanczos 3,27), luminosità invariata, niente aloni a occhio; AI e fps identici. Non ancora
+     giudicato dall'utente.
      **Provato dal vivo con la PS5 (18 nov): extrap scartato.** Input più rapido (ritardo adattivo ~33 ms contro ~49 di
      interp) ma "sembra di giocare a 30 fps". Nel log gli fps mostrati erano 66-83 e `late` 0, quindi non era la
      finestra; `stale` ~7/s (fino a 14): circa un fotogramma AI su cinque cadeva dopo il reale successivo e veniva

@@ -341,6 +341,54 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------- window
+CAS_VERT = """
+#version 120
+void main() { gl_TexCoord[0] = gl_MultiTexCoord0; gl_Position = gl_Vertex; }
+"""
+# AMD FidelityFX CAS (contrast-adaptive sharpening), the 5-tap cross version: each pixel is pushed away from its four
+# neighbours in the source picture, by an amount that shrinks where the neighbourhood already has strong contrast (no
+# halos, no ringing on edges). Sampled at the screen's pixels, so it sharpens the picture as it is scaled up.
+CAS_FRAG = """
+#version 120
+uniform sampler2D tex;
+uniform vec2 texel;  // one source pixel, in texture coordinates
+uniform float sharp; // 0..1
+void main() {
+    vec2 uv = gl_TexCoord[0].xy;
+    vec3 e = texture2D(tex, uv).rgb;
+    vec3 b = texture2D(tex, uv - vec2(0.0, texel.y)).rgb;
+    vec3 d = texture2D(tex, uv - vec2(texel.x, 0.0)).rgb;
+    vec3 f = texture2D(tex, uv + vec2(texel.x, 0.0)).rgb;
+    vec3 h = texture2D(tex, uv + vec2(0.0, texel.y)).rgb;
+    vec3 mn = min(min(min(d, e), min(f, b)), h);
+    vec3 mx = max(max(max(d, e), max(f, b)), h);
+    vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+    vec3 w = amp * (-1.0 / mix(8.0, 5.0, sharp));
+    gl_FragColor = vec4(clamp((b * w + d * w + f * w + h * w + e) / (1.0 + 4.0 * w), 0.0, 1.0), 1.0);
+}
+"""
+
+
+def cas_program(GL):
+    """The sharpening shader, or None (and a note) if this OpenGL can't build it: the picture is then drawn plain."""
+    try:
+        prog = GL.glCreateProgram()
+        for kind, src in ((GL.GL_VERTEX_SHADER, CAS_VERT), (GL.GL_FRAGMENT_SHADER, CAS_FRAG)):
+            sh = GL.glCreateShader(kind)
+            GL.glShaderSource(sh, src)
+            GL.glCompileShader(sh)
+            if not GL.glGetShaderiv(sh, GL.GL_COMPILE_STATUS):
+                raise RuntimeError(GL.glGetShaderInfoLog(sh).decode(errors="replace"))
+            GL.glAttachShader(prog, sh)
+        GL.glLinkProgram(prog)
+        if not GL.glGetProgramiv(prog, GL.GL_LINK_STATUS):
+            raise RuntimeError(GL.glGetProgramInfoLog(prog).decode(errors="replace"))
+        return prog
+    except Exception as e:  # noqa: BLE001 - sharpening is a nicety
+        print(f"Note: no sharpening ({e}); the picture is drawn without it.")
+        return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source", nargs="?", help="a video file (default: the demo)")
@@ -360,6 +408,9 @@ def main() -> None:
                          "the picture is shown ~60 ms late. extrap: it is drawn after the latest real frame from the "
                          "motion between the last two: ~30 ms less delay, a little less exact (see "
                          "scripts/extrapolation_probe.py)")
+    ap.add_argument("--sharp", type=float, default=0.5, metavar="0..1",
+                    help="sharpening when the picture is drawn (AMD's contrast-adaptive sharpening, CAS): it makes up for "
+                         "the softness of scaling 1080p up to the screen; 0 = off. The S key turns it on and off.")
     ap.add_argument("--vsync", action="store_true",
                     help="wait for the screen's vsync on every loop, as before (the loop then runs at only ~100 a second "
                          "on macOS, however fast the screen is, and drops frames that fall in the same loop)")
@@ -426,8 +477,15 @@ def main() -> None:
     for p in (GL.GL_TEXTURE_WRAP_S, GL.GL_TEXTURE_WRAP_T):
         GL.glTexParameteri(GL.GL_TEXTURE_2D, p, GL.GL_CLAMP_TO_EDGE)
     GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGB8, w, h, 0, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, None)
+    cas = cas_program(GL)  # built even at --sharp 0, so the S key can turn it on
+    if cas is not None:
+        GL.glUseProgram(cas)
+        GL.glUniform1i(GL.glGetUniformLocation(cas, "tex"), 0)
+        GL.glUniform2f(GL.glGetUniformLocation(cas, "texel"), 1.0 / w, 1.0 / h)
+        u_sharp = GL.glGetUniformLocation(cas, "sharp")
+        GL.glUseProgram(0)
 
-    state = {"full": False, "saved": None}
+    state = {"full": False, "saved": None, "sharp": min(1.0, max(0.0, a.sharp))}
 
     def on_key(window, key, _sc, action, _mods):
         if action != glfw.PRESS:
@@ -437,6 +495,10 @@ def main() -> None:
         elif key == glfw.KEY_SPACE and n > 0:
             ai_on.value = 0 if ai_on.value else 1
             print("AI frames", "ON" if ai_on.value else "OFF", flush=True)
+        elif key == glfw.KEY_S and cas is not None:
+            state["sharp"] = 0.0 if state["sharp"] > 0 else (min(1.0, a.sharp) if a.sharp > 0 else 0.5)
+            print("Sharpening", f"ON ({state['sharp']:g})" if state["sharp"] > 0 else "OFF", flush=True)
+            redraw["need"] = True
         elif key == glfw.KEY_F:
             if state["full"]:
                 x, y, ww, hh = state["saved"]
@@ -536,11 +598,15 @@ def main() -> None:
                 if have_frame and fw and fh:
                     sx = min(1.0, (fw / fh) / (w / h))
                     sy = min(1.0, (w / h) / (fw / fh))
+                    if cas is not None and state["sharp"] > 0:
+                        GL.glUseProgram(cas)
+                        GL.glUniform1f(u_sharp, state["sharp"])
                     GL.glBegin(GL.GL_QUADS)
                     for u, v, x, y in ((0, 1, -sx, -sy), (1, 1, sx, -sy), (1, 0, sx, sy), (0, 0, -sx, sy)):
                         GL.glTexCoord2f(u, v)
                         GL.glVertex2f(x, y)
                     GL.glEnd()
+                    GL.glUseProgram(0)
                 glfw.swap_buffers(win)
             glfw.poll_events()
             if not a.vsync and chosen is None:
