@@ -33,9 +33,14 @@ ROOT = Path(__file__).resolve().parent.parent
 RES = {"720p": (1280, 720), "1080p": (1920, 1080)}
 SLOTS = 10  # frames in flight between the two processes
 STILL_LEVEL = 0.35  # change on a thumbnail, summed up since the last picture shown, that makes a picture new
-STEP_LEVEL = 0.04  # change on a thumbnail from the frame just before that makes a picture new (a repeat differs by ~0)
+STEP_LEVEL = 0.04  # change on a thumbnail from the frame just before that makes a picture new, at the least (a repeat ~0)
+STEP_REL = 0.03  # ...and at a fast scene, this fraction of how much the pictures there differ (a repeat at a high bitrate
+#                  isn't exact: codec noise of ~0.06 on a thumbnail, against 5-20 between two pictures of a moving scene)
+STEP_MAX = 0.5  # ...but never more than this
 GAP_S = 0.09  # frames further apart than this (a still screen that started moving) get no AI frame between them
 LATE_S = 0.026  # a real frame older than this when the AI would start can't get its AI frame out in time: skipped
+AI_OFF_FPS = 50.0  # live: a game running faster than this needs no AI frames (they only add delay, and the AI can't keep up)
+AI_ON_FPS = 44.0  # ...and below this it does again (the gap between the two keeps it from flipping back and forth)
 CUT_LEVEL = 35.0  # mean difference (0..255) on a thumbnail above which two frames are a scene cut: no AI frame
 
 
@@ -90,15 +95,19 @@ class FileSource:
 class StillFilter:
     """Says whether a decoded frame is a new picture or a repeat of the one before it.
 
-    A frame is new when it differs from the frame received just before it (STEP_LEVEL: a repeat of a 30 fps game's
-    picture differs by about nothing, a slow pan by a little), or when the changes since the last picture passed add up
-    to STILL_LEVEL (slower than that is a still screen with something tiny moving). Comparing only with the last
-    picture passed, as this did before, held a slow pan back until its changes added up: a few fps instead of 30."""
+    A frame is new when it differs from the frame received just before it by more than a repeat would (the level is
+    STEP_LEVEL, or STEP_REL of how much the frames received lately differ if that is more: a repeat of a 30 fps game's
+    picture differs by about nothing, or by a little codec noise at a high bitrate, a slow pan by a little more), or
+    when the changes since the last picture passed add up to STILL_LEVEL (slower than that is a still screen with
+    something tiny moving). Comparing only with the last picture passed, as this did before, held a slow pan back until
+    its changes added up: a few fps instead of 30. It goes by the pixels, not by the size of the compressed frame: a
+    new frame can be small and a repeat big, and the size said "repeat" for half the frames of a 60 fps game."""
 
     def __init__(self) -> None:
         self.held: np.ndarray | None = None  # thumbnail of the last picture passed
         self.last: np.ndarray | None = None  # thumbnail of the last frame received
         self.step = 0.0  # the last frame's difference from the frame received just before it (for the statistics)
+        self.motion = 0.0  # how much the frames received lately differ from the one before (a running average)
 
     def is_new(self, rgb: np.ndarray) -> bool:
         thumb = rgb[::16, ::16].astype(np.int16)
@@ -107,7 +116,9 @@ class StillFilter:
             self.held = thumb
             return True
         self.step = float(np.abs(thumb - last).mean())
-        if self.step >= STEP_LEVEL or np.abs(thumb - self.held).mean() >= STILL_LEVEL:
+        level = min(STEP_MAX, max(STEP_LEVEL, STEP_REL * self.motion))
+        self.motion += 0.1 * (self.step - self.motion)  # over every frame received, repeats included (half of the pictures' step)
+        if self.step >= level or np.abs(thumb - self.held).mean() >= STILL_LEVEL:
             self.held = thumb
             return True
         return False
@@ -147,9 +158,8 @@ class TapSource:
             if not isinstance(tick, Tick):  # a Waiting: the stream stalled for a moment
                 continue
             self.recv += 1
-            if tick.new_hint is False:  # a repeat of the frame before
+            if tick.new_hint is False:  # what the size of the compressed frame says (counted, not trusted: see StillFilter)
                 self.size_dup += 1
-                continue
             rgb = tick.frame
             # On a near-still screen (a menu) every compressed frame is tiny, so the size says "new" for nearly all of
             # them and the AI would have twice the frames it can do. A picture that hasn't changed is a repeat, and
@@ -244,10 +254,15 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
         skipped = 0
         gaps: deque = deque(maxlen=8)  # recent gaps between real frames: where an extrapolated frame falls in time
         t_snap = time.monotonic()
+        auto_ai = True  # live: AI frames only while the game runs slower than AI_ON_FPS / AI_OFF_FPS
+        game_fps = 0.0
+        stamps: deque = deque()  # when the real frames of the last 2 seconds arrived: the game's rate comes from their count
         for k, item in enumerate(src):
             if live and time.monotonic() - t_snap >= 1.0:
                 t_snap = time.monotonic()
-                ready_q.put(("tapstat", live_src.snapshot()))
+                snap = live_src.snapshot()
+                snap.update(game=round(game_fps), ai=auto_ai)
+                ready_q.put(("tapstat", snap))
             if live:  # a real frame exists from the moment it arrived
                 frame, t_arr, damaged = item
                 pts = t_arr - t0
@@ -272,7 +287,16 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
             ready_q.put(("frame", s, pts, False, (time.perf_counter() - t_body) * 1000, None))
             if prev is not None and 0 < pts - prev_pts <= GAP_S:
                 gaps.append(pts - prev_pts)
-            if rife is not None and prev is not None and ai_on.value and not damaged and not behind and not is_cut(prev, frame):
+            stamps.append(pts)
+            while stamps[0] < pts - 2.0:
+                stamps.popleft()
+            if live and len(stamps) >= 20 and pts - stamps[0] >= 1.5:
+                game_fps = (len(stamps) - 1) / (pts - stamps[0])
+                if auto_ai and game_fps > AI_OFF_FPS:
+                    auto_ai = False
+                elif not auto_ai and game_fps < AI_ON_FPS:
+                    auto_ai = True
+            if rife is not None and prev is not None and ai_on.value and auto_ai and not damaged and not behind and not is_cut(prev, frame):
                 # extrap: the AI frame is a fraction t of ONE game frame after this one, in the game's time (the flow
                 # is the motion over one game frame), put where the game's pace says (the typical gap, not this
                 # arrival's jitter). The window drops it if a newer real frame turns out to come before it.
@@ -425,7 +449,7 @@ def main() -> None:
     pending: list = []  # (slot, due time, base real frame's pts if extrapolated, pts), earliest first
     newest_real = -1.0  # pts of the newest real frame received
     stats = {"shown": 0, "drop": 0, "late": 0, "stale": 0, "ms": [], "body": [], "t": time.monotonic()}
-    min_delay = 0.015 if a.mode == "extrap" else 0.030  # the floor of the adaptive delay
+    min_delay = 0.015 if a.mode == "extrap" else 0.020  # the floor of the adaptive delay (nothing to wait for: no AI frames)
     have_frame = False
     try:
         while not glfw.window_should_close(win):
@@ -439,7 +463,8 @@ def main() -> None:
                 if msg[0] == "tapstat":
                     t = msg[1]
                     print(f"   tap: stream {t['recv']}/s, repeats by size {t['size_dup']}, repeats by picture {t['still']}, "
-                          f"passed on {t['passed']} | step of passed p10/p50/p90 {t['pass']}, of skipped p50/p90 {t['skip']}",
+                          f"passed on {t['passed']} | step of passed p10/p50/p90 {t['pass']}, of skipped p50/p90 {t['skip']} | "
+                          f"game ~{t['game']} fps, AI {'on' if t['ai'] else 'off (game fast enough)'}",
                           flush=True)
                     continue
                 _, s, pts, is_ai, ms, base = msg
@@ -521,7 +546,7 @@ def main() -> None:
                 ready = sorted(nd for t_n, nd in needs if t_n > now - el)
                 if ready:
                     rife += f" | ready {ready[len(ready) // 2] * 1000:.0f}/{ready[int(len(ready) * 0.9)] * 1000:.0f}/{ready[-1] * 1000:.0f} ms"
-                line = (f"{'AI ON ' if ai_on.value and n else 'AI OFF'} | {stats['shown'] / el:5.1f} fps shown | "
+                line = (f"{'AI ON ' if ai_on.value and n and ms else 'AI OFF'} | {stats['shown'] / el:5.1f} fps shown | "
                         f"{rife} | delay {delay * 1000:.0f} ms | late {stats['late']} | dropped {stats['drop']}"
                         + (f" | stale {stats['stale']}" if a.mode == "extrap" else ""))
                 glfw.set_window_title(win, f"SmoovPlay Mac prototype | {line}")

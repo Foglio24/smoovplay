@@ -130,6 +130,21 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      di interp: il flusso "perde" 0,3-0,6 px dentro la patch). Le patch erano texture del mondo, non una vera barra HUD:
      da guardare a occhio su HUD e testo. Una coppia che copre k fotogrammi di gioco usa `t / k` (k arrotondato, max 4).
      I log delle due app sono separati (`play.log`/`play_extrap.log`, `SMOOVPLAY_LOG_TAG`).
+     **Il gioco non è a 30 fps (18 nov, 30 Mbps)**: alzato il bitrate di chiaki-ng a 30 Mbps
+     (`defaults write com.chiaki.Chiaki settings.bitrate_local_ps5 -int 30000`; default 15 Mbps; per tornare
+     `defaults delete ...`): immagine più pulita, ma fps mostrati 90-100, ritardo 56 ms, 97 AI saltati. Le righe `tap:`
+     (statistiche al secondo) hanno mostrato ~55 fotogrammi nuovi al secondo con passo mediano 14-20 (scena veloce):
+     il gioco girava a ~55-60 fps, non a 30 raddoppiati. Il rilevatore dei ripetuti dalla *dimensione* del frame
+     compresso (`SizeRepeatDetector`) sbaglia: con una clip a 60 fps tutta di fotogrammi nuovi ne dava ~30/s per
+     ripetuti (i frame "intermedi" sono più piccoli); a 15 Mbps scartava frame veri e faceva credere a un gioco a 30.
+     Ora `TapSource` non si fida più della dimensione (solo contata nelle righe `tap:`): decide `StillFilter` dai
+     pixel, con soglia sui ripetuti `max(STEP_LEVEL, STEP_REL * velocità della scena)` (un ripetuto a bitrate alto ha
+     rumore ~0,06 sulla miniatura, due immagini diverse di una scena veloce 5-20). **L'AI ora si accende solo sotto
+     44 fps del gioco e si spegne sopra 50** (`AI_ON_FPS`/`AI_OFF_FPS`, fps contati in 2 s): a 55-60 fps l'AI da 15 ms
+     per frame occupa l'83% del tempo e aggiunge ritardo senza dare molto; col flusso finto a 60 fps ritardo adattivo
+     25-33 ms invece di ~50. Pavimento del ritardo adattivo 30 -> 20 ms. Test: `tests/test_still_filter.py`. **Non
+     verificato con la PS5 dopo la modifica**: da guardare se a ~55 fps reali senza AI l'immagine sembra meno fluida
+     di prima (per riaccendere l'AI sempre: `AI_OFF_FPS` alto).
      **Provato dal vivo con la PS5 (18 nov): extrap scartato.** Input più rapido (ritardo adattivo ~33 ms contro ~49 di
      interp) ma "sembra di giocare a 30 fps". Nel log gli fps mostrati erano 66-83 e `late` 0, quindi non era la
      finestra; `stale` ~7/s (fino a 14): circa un fotogramma AI su cinque cadeva dopo il reale successivo e veniva

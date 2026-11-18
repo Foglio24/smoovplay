@@ -43,6 +43,21 @@ def main() -> int:
     doubled = [p for p in pics for _ in range(2)]  # the 60 Hz stream: each one twice
     ok &= check("slow pan, every picture twice", emitted(doubled), range(29, 31))
     ok &= check("true still screen (60 identical frames)", emitted([pics[0]] * 60), range(1, 2))
+    # a fast scene (30 fps game, each picture twice), the repeat differing a little from its picture as a stream at a
+    # high bitrate leaves it (codec noise, ~0.06 on a thumbnail): the repeats must still go, the pictures must stay
+    fast = slow_pan(30, 8.0)
+    rng = np.random.default_rng(2)
+    noisy = []
+    for pic in fast:
+        noisy.append(pic)
+        flick = (rng.random(pic.shape[:2]) < 0.06)[..., None] * rng.choice([-1, 1], pic.shape[:2])[..., None]
+        noisy.append(np.clip(pic.astype(np.int16) + flick, 0, 255).astype(np.uint8))
+    # (a few repeats at the start get through: the scene's speed isn't known yet)
+    ok &= check("fast scene, noisy repeats (30 fps game)", emitted(noisy), range(29, 34))
+    f = play.StillFilter()
+    steady = [f.is_new(fr) for fr in noisy]
+    ok &= check("same, once the speed is known (last 40 frames: 20 pictures)", sum(steady[20:]), range(20, 21))
+    ok &= check("60 fps game, every frame new", emitted(slow_pan(60, 8.0)), range(60, 61))
     cut = [pics[0]] * 5 + [255 - pics[0]] * 5
     ok &= check("hard cut in a still screen", emitted(cut), range(2, 3))
     return 0 if ok else 1
