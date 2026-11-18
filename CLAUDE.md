@@ -158,8 +158,8 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      la finestra disegna con lo shader AMD CAS a 5 campioni (`CAS_FRAG` in `mac/play.py`, GLSL 1.20 sul contesto GL
      legacy di macOS; senza shader si torna al disegno semplice). `--sharp` 0..1, default 0,5; tasto **S** acceso/spento
      per confrontare. Fuori schermo a 2560x1440 su un fotogramma della clip: dettaglio (gradiente medio) 3,05 semplice,
-     3,93 a 0,5, 5,30 a 1,0 (Lanczos 3,27), luminosità invariata, niente aloni a occhio; AI e fps identici. Non ancora
-     giudicato dall'utente.
+     3,93 a 0,5, 5,30 a 1,0 (Lanczos 3,27), luminosità invariata, niente aloni a occhio; AI e fps identici. Provato
+     dall'utente con la PS5 (confronto col tasto S): 0,5 va bene, resta il default.
      **Provato dal vivo con la PS5 (18 nov): extrap scartato.** Input più rapido (ritardo adattivo ~33 ms contro ~49 di
      interp) ma "sembra di giocare a 30 fps". Nel log gli fps mostrati erano 66-83 e `late` 0, quindi non era la
      finestra; `stale` ~7/s (fino a 14): circa un fotogramma AI su cinque cadeva dopo il reale successivo e veniva
