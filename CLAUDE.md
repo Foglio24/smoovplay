@@ -63,9 +63,15 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
    - Cambio di comportamento: su POSIX il segmento shm sopravvive a un crash (su Windows sparisce con l'ultimo handle).
      Dopo un crash di chiaki-ng `magic` resta acceso e `play.py --tap` aspetta uno stream morto: si pulisce con un riavvio
      o `shm_unlink`. `framegen/tap.py` (fotogrammi decodificati) non è stato portato: non serve per la PS5.
-   - **Da fare**: compilare chiaki-ng v1.10.1 su macOS con `chiaki_tap/apply_patch.py` (ancora non installato nulla:
-     serve prima stimare lo spazio, ~16 GB liberi; capire se bastano i Command Line Tools o serve Xcode completo),
-     poi provare con la PS5 vera. Il filtro "fotogramma nuovo" per giochi a 60 fps veri (menu) non è gestito in `play.py`.
+   - chiaki-ng v1.10.1 compilato con il tap (18/11/2026): sorgente in `~/src/chiaki-ng`, app in
+     `build/gui/chiaki.app`, 10 simboli `frametap_*`, parte (ripiego su OpenGL: manca MoltenVK, non serve per il tap).
+     Bastano i Command Line Tools, niente Xcode. Costo disco ~2 GB brew + 250 MB sorgenti/build. Ricetta:
+     `chiaki_tap/build_macos.sh`; avvio: `bash chiaki_tap/run_chiaki_frametap.sh` (serve `CHIAKI_FRAMETAP=1`, che
+     Finder/`open` non passano). Trucchi: nanopb vuole il modulo Python `protobuf<6` (venv `~/src/pbvenv`, cmake
+     `-DPYTHON_EXECUTABLE`); gli header di openssl@4 coprono quelli di openssl@3, quindi `brew unlink openssl@4`
+     durante la compilazione e `brew link openssl@4` dopo (lo fa lo script).
+   - **Da fare**: provare con la PS5 vera (Luca): abilitare Remote Play sulla PS5, registrarla in chiaki-ng, scegliere
+     1080p, 60 fps, H.265; poi `bash run_play.sh --tap` PRIMA di connettere. Misurare fps mostrati e ritardo. Il filtro "fotogramma nuovo" per giochi a 60 fps veri (menu) non è gestito in `play.py`.
 2. Ottimizzazioni: codificare ogni fotogramma reale una volta sola (oggi il modello codifica entrambi a ogni
    chiamata), passare i fotogrammi come CVPixelBuffer/IOSurface invece che PIL, tarare il ritardo (oggi 80 ms).
 3. Upscaling con MetalFX (o FSR 1 come shader) e presentazione con Metal.
