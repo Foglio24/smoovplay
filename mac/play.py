@@ -32,7 +32,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 RES = {"720p": (1280, 720), "1080p": (1920, 1080)}
 SLOTS = 10  # frames in flight between the two processes
-STILL_LEVEL = 0.35  # mean difference on a thumbnail below which two frames are the same picture
+STILL_LEVEL = 0.35  # change on a thumbnail, summed up since the last picture shown, that makes a picture new
+STEP_LEVEL = 0.04  # change on a thumbnail from the frame just before that makes a picture new (a repeat differs by ~0)
 GAP_S = 0.09  # frames further apart than this (a still screen that started moving) get no AI frame between them
 LATE_S = 0.026  # a real frame older than this when the AI would start can't get its AI frame out in time: skipped
 CUT_LEVEL = 35.0  # mean difference (0..255) on a thumbnail above which two frames are a scene cut: no AI frame
@@ -86,6 +87,30 @@ class FileSource:
                     yield f.to_ndarray(format="rgb24", width=self.w, height=self.h)
 
 
+class StillFilter:
+    """Says whether a decoded frame is a new picture or a repeat of the one before it.
+
+    A frame is new when it differs from the frame received just before it (STEP_LEVEL: a repeat of a 30 fps game's
+    picture differs by about nothing, a slow pan by a little), or when the changes since the last picture passed add up
+    to STILL_LEVEL (slower than that is a still screen with something tiny moving). Comparing only with the last
+    picture passed, as this did before, held a slow pan back until its changes added up: a few fps instead of 30."""
+
+    def __init__(self) -> None:
+        self.held: np.ndarray | None = None  # thumbnail of the last picture passed
+        self.last: np.ndarray | None = None  # thumbnail of the last frame received
+
+    def is_new(self, rgb: np.ndarray) -> bool:
+        thumb = rgb[::16, ::16].astype(np.int16)
+        last, self.last = self.last, thumb
+        if self.held is None:
+            self.held = thumb
+            return True
+        if np.abs(thumb - last).mean() >= STEP_LEVEL or np.abs(thumb - self.held).mean() >= STILL_LEVEL:
+            self.held = thumb
+            return True
+        return False
+
+
 class TapSource:
     """Live frames from the frame tap (chiaki_tap/, docs/frame-tap.md): chiaki-ng streaming a PS5, or the fake PS5
     (scripts/frametap_fake.py). The stream is 60 Hz with every frame of a 30 fps game sent twice; ChiakiSource decodes
@@ -103,21 +128,19 @@ class TapSource:
 
     def __iter__(self):
         from framegen.io import Tick
-        prev = None
+        filt = StillFilter()
         for tick in self.src:
             if not isinstance(tick, Tick):  # a Waiting: the stream stalled for a moment
                 continue
             if tick.new_hint is False:  # a repeat of the frame before
                 continue
             rgb = tick.frame
-            thumb = rgb[::16, ::16].astype(np.int16)
             # On a near-still screen (a menu) every compressed frame is tiny, so the size says "new" for nearly all of
             # them and the AI would have twice the frames it can do. A picture that hasn't changed is a repeat, and
             # there is nothing to interpolate between two equal pictures anyway.
-            if prev is not None and np.abs(thumb - prev).mean() < STILL_LEVEL:
+            if not filt.is_new(rgb):
                 self.still += 1
                 continue
-            prev = thumb
             yield rgb, tick.t_arrival, tick.damaged
 
     def close(self) -> None:

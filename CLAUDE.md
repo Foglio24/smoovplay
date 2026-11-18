@@ -93,6 +93,13 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      (`STILL_LEVEL`) e si salta l'AI per i fotogrammi già vecchi (`LATE_S`); (3) il decoder non si riprendeva se entrava a
      metà GOP ("Could not find ref"): ora chiede un keyframe se dopo 1 s non esce nessuna immagine; (4) conversione
      diretta a RGB nel lettore (`ChiakiSource.pix_fmt`), niente più flip per fotogramma: corpo del ciclo 24,3 ms.
+     **Bug trovato in prova (18 nov)**: il filtro "immagine ferma" confrontava ogni fotogramma solo con l'ultimo
+     *mostrato* (soglia `STILL_LEVEL` 0,35): un movimento lento (camera ferma-ish, personaggio in idle) cambia ~0,08 per
+     immagine, quindi passava 1 immagine su ~5: 6 fps invece di 30 (misurato con una panoramica sintetica; dal vivo 0-13
+     fps mostrati con flusso PS5 stabile a 60/s, `frames_lost 0`, quindi non era la rete). Ora `StillFilter` confronta
+     anche con il fotogramma *appena ricevuto* (`STEP_LEVEL` 0,04: un ripetuto differisce ~0) e tiene la somma 0,35.
+     Test: `tests/test_still_filter.py`. **Non verificato dal vivo**: 0,04 presuppone che i ripetuti del PS5 (HEVC)
+     differiscano meno di così; se `fps shown` resta a 60 su schermo fermo e l'AI va in ritardo, alzare `STEP_LEVEL`.
      Aperto: in gioco ~56-60 fps mostrati, late 0, ma `dropped` ~17-23/s (fotogrammi che cadono nello stesso tick di
      schermo a 240 Hz): serve un ritmo di presentazione regolare. Qualità dell'immagine in sé (bitrate H.265 di chiaki-ng,
      RIFE a movimento dimezzato, artefatti) non ancora valutata a occhio.
