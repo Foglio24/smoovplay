@@ -28,9 +28,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # Il lanciatore punta allo script nella cartella del progetto, così un aggiornamento dello script vale subito.
+# Parte da Terminale: macOS lascia raggiungere la PS5 (rete locale) a Terminale, ma blocca i programmi lanciati da
+# un'app creata a mano ("No route to host"). Con "open -a Terminal" lo script gira nella finestra di Terminale, che si
+# chiude da sola quando lo script finisce.
 cat > "$APP/Contents/MacOS/SmoovPlay" <<LAUNCH
 #!/bin/bash
-exec /bin/bash "$REPO/mac/smoovplay_mac.sh"
+exec /usr/bin/open -a Terminal "$REPO/mac/smoovplay_mac.sh"
 LAUNCH
 chmod +x "$APP/Contents/MacOS/SmoovPlay"
 

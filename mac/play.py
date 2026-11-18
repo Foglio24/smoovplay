@@ -128,9 +128,11 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
     try:
         from PIL import Image
         live = args.tap is not None
-        src = TapSource(args.tap or None) if live else FileSource(args.source) if args.source else DemoSource(*RES[args.res])
-        live_src = src if live else None
-        w, h, fps = src.w, src.h, src.fps
+        if live:  # the model loads before waiting for the stream: a stream's codec header comes only once, at its start
+            (w, h), fps = RES[args.res], 30.0
+        else:
+            src = FileSource(args.source) if args.source else DemoSource(*RES[args.res])
+            w, h, fps = src.w, src.h, src.fps
         n = args.mult - 1
         scale = {"full": 1.0, "half": 0.5}.get(args.motion) or (0.5 if h >= 1000 or n >= 2 else 1.0)
         rife = None
@@ -145,6 +147,12 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
             warm = Image.fromarray(np.zeros((h, w, 3), np.uint8))
             for _ in range(3):
                 rife.interpolate(warm, warm, 0.5)
+
+        if live:
+            print("[smoovplay] ready, waiting for the stream", flush=True)  # smoovplay_mac.sh starts chiaki-ng on this
+            src = live_src = TapSource(args.tap or None)
+            if (src.w, src.h) != (w, h):
+                raise RuntimeError(f"the stream is {src.w}x{src.h}, but SmoovPlay started for {w}x{h}: use --res")
 
         size = w * h * 3
         shm = shared_memory.SharedMemory(create=True, size=size * SLOTS)

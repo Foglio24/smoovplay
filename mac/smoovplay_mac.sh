@@ -40,7 +40,13 @@ cd "$REPO" || exit 1
 # Prima il programma AI, che aspetta lo stream; poi chiaki-ng, che si collega alla PS5.
 "$PY" -W ignore -u mac/play.py --tap > "$LOGDIR/play.log" 2>&1 &
 PLAY=$!
-sleep 2
+# chiaki-ng parte solo quando il programma AI ha caricato il modello e aspetta lo stream: l'intestazione del codec
+# arriva una volta sola, all'inizio dello stream, e se manca l'immagine resta a 0 fps.
+for _ in $(seq 1 180); do
+    grep -q "ready, waiting for the stream" "$LOGDIR/play.log" 2>/dev/null && break
+    kill -0 "$PLAY" 2>/dev/null || { notify "Il programma AI si è fermato. Dettagli: $LOGDIR/play.log"; exit 1; }
+    sleep 1
+done
 CHIAKI_FRAMETAP=1 "$CHIAKI" --exit-app-on-stream-exit stream "$PS5_NAME" "$PS5_HOST" > "$LOGDIR/chiaki.log" 2>&1 &
 CHI=$!
 
