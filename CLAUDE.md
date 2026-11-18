@@ -76,6 +76,11 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      dopo la connessione sono molto peggio (14-25 fps, ~40 in ritardo). chiaki-ng usa ~99% di un core. Se `play.py` parte
      con uno stream già avviato resta a 0 fps: serve riavviare chiaki-ng (o chiudere/riaprire lo stream) con `play.py` in attesa.
      Ctrl+O/Cmd+O non apre il menu in schermo intero: si chiude chiaki-ng e lo si riavvia.
+   - **App sul Desktop** (`bash mac/make_app.sh` crea `~/Desktop/SmoovPlay.app`, icona inclusa): lancia `mac/smoovplay_mac.sh`,
+     che pulisce, avvia `play.py --tap`, avvia `chiaki stream PS5-590 192.168.1.74` con il tap e chiude tutto quando
+     uno dei due finisce. Nome/IP della PS5 in cima allo script (o `SMOOVPLAY_PS5_NAME`/`_HOST`). Log in
+     `~/Library/Logs/SmoovPlay/`. Dall'app, macOS chiede il permesso "Rete locale" per chiaki (senza: `No route to host`,
+     mentre da Terminale funziona); va concesso una volta, a mano.
    - **Da fare**: ~~provare con la PS5 vera~~ fatto, ora ritmo/ritardo (punto 2); era: provare con la PS5 vera (Luca): abilitare Remote Play sulla PS5, registrarla in chiaki-ng, scegliere
      1080p, 60 fps, H.265; poi `bash run_play.sh --tap` PRIMA di connettere. Misurare fps mostrati e ritardo. Il filtro "fotogramma nuovo" per giochi a 60 fps veri (menu) non è gestito in `play.py`.
 2. Ottimizzazioni: codificare ogni fotogramma reale una volta sola (oggi il modello codifica entrambi a ogni
