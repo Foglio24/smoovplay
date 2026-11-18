@@ -108,6 +108,25 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      `--vsync` ripristina il vecchio ciclo. Con la clip demo: 60,0 fps fissi (prima 57,7-60,7). **Non verificato dal
      vivo con la PS5**: atteso `dropped` ~0 e movimento più regolare; se si vede tearing o la finestra non si aggiorna,
      provare `--vsync`.
+     **Estrapolazione (`--mode extrap`, 18 nov)**: l'interpolazione ha un pavimento di ritardo (il fotogramma AI sta a
+     metà tra due reali ma serve il successivo: ~mezzo intervallo + calcolo = 17 + 15 ms, più la jitter d'arrivo: da
+     qui il ritardo adattivo di 60-80 ms). L'estrapolazione disegna il fotogramma *dopo* l'ultimo reale, dal moto
+     tra gli ultimi due (`RifePair` variante `extrap`: flusso a t=0.5, poi `warp(img1, -t * (f1 - f0 - bias))`, `t` =
+     frazione di un intervallo di gioco), quindi non aspetta nulla. Misura (`scripts/extrapolation_probe.py`, clip
+     demo con movimento doppio del live, contro il fotogramma vero): ripetere l'ultimo 23,7 dB, estrapolare 35,3 dB,
+     interpolare 38,6 dB (caso peggiore 10%: 19,8 / 31,2 / 36,2). Traslazioni pure: spostamento giusto entro 0,15 px;
+     **coppie identiche: il flusso dà un moto fantasma di (-0,034; -0,403) px (sd 0,01), che spostava lo schermo fermo di
+     0,2 px = tremolio: sottratto (`ext_bias`), ora 0,06 px**. Il ricampionamento del moto sulla griglia di arrivo non
+     serve (+0,05 dB). Core ML fp16 13,9 ms (non più veloce: la rete del flusso domina), 49 dB da PyTorch. Con la clip a
+     ritardo fisso 30 ms: interp `late` 5-15/s e `ready` 33-49 ms, extrap `late` 0 e `ready` 3-11 ms; col flusso finto
+     il ritardo adattivo va da ~50 a 15 ms (il minimo di `min_delay`). Nella finestra un fotogramma estrapolato che
+     cadrebbe dopo un reale più nuovo si scarta (`is_stale`/`drop_stale`, `tests/test_extrap_order.py`, contatore
+     `stale`); il tempo del fotogramma è `pts + t * (gap tipico)`, non la jitter dell'arrivo. **Costo: l'immagine
+     cambia di colpo quando il moto cambia (frenata, scatto): il reale successivo "corregge". Non verificato dal
+     vivo con la PS5**; `--mult 3` (t=1/3, 2/3) non validato. Default resta `interp`; sul Desktop ci sono
+     `SmoovPlay.app` (interp) e `SmoovPlay Reattivo.app` (extrap, icona verde) per il confronto (`mac/make_app.sh`).
+     Se `extrap` piace ma si vede un tremolio su schermo fermo, rimisurare `MOTION_BIAS` con la sonda e cambiare
+     `ext_bias` in `scripts/coreml_mac.py` (e il nome del pacchetto).
      Aperto: in gioco ~56-60 fps mostrati, late 0, ma `dropped` ~17-23/s (fotogrammi che cadono nello stesso tick di
      schermo a 240 Hz): serve un ritmo di presentazione regolare. Qualità dell'immagine in sé (bitrate H.265 di chiaki-ng,
      RIFE a movimento dimezzato, artefatti) non ancora valutata a occhio.

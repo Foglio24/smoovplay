@@ -62,7 +62,7 @@ class ResFolded(nn.Module):
         return self.relu(self.conv(x) + x)
 
 
-VARIANTS = ("base", "fold", "lean", "lean2", "lean2g", "lean3")  # a trailing "g": the warp grids in 32-bit (see grid_precision)  # base: as converted first; fold: beta folded (exact); lean: fold + no full-size round trip
+VARIANTS = ("base", "fold", "lean", "lean2", "lean2g", "lean3", "extrap")  # a trailing "g": the warp grids in 32-bit (see grid_precision)  # base: as converted first; fold: beta folded (exact); lean: fold + no full-size round trip
 
 
 class RifePair(nn.Module):
@@ -96,6 +96,10 @@ class RifePair(nn.Module):
         # motion). Alternating with the real frames that shows as a tremble. "lean3" samples that much further down and
         # right at the last step (flow_x/flow_y are in full-size pixels).
         self.register_buffer("bias", torch.tensor([0.05, 0.17, 0.05, 0.17]).view(1, 4, 1, 1))
+        # "extrap": the flow network reports this much motion (f1 - f0, px per gap) between two frames that don't move at
+        # all (mean over 15 clips frames at 1080p, sd 0.01), so a still picture would be drawn 0.2 px off: a tremble
+        # against the real frames. scripts/extrapolation_probe.py measures it.
+        self.register_buffer("ext_bias", torch.tensor([-0.034, -0.403]).view(1, 2, 1, 1))
         self.full = (ph, pw)
         self.sizes = [(int(ph / s), int(pw / s)) for s in self.scales]
         for k, (sh, sw) in enumerate(self.sizes):  # the same normalised grid at each block's size (lean2 warps there)
@@ -113,10 +117,31 @@ class RifePair(nn.Module):
         grid = flow.permute(0, 2, 3, 1) * self.flow_to_grid + getattr(self, f"grid{k}")
         return F.grid_sample(src, grid, mode="bilinear", padding_mode="border", align_corners=True)
 
+    def _forward_extrap(self, img0: torch.Tensor, img1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """The frame t of a gap AFTER img1 (t = 0.5: half a gap on), drawn from the two real frames already there: img1
+        moved on by t times the motion between them. No frame later than img1 is needed, so it can be shown before one
+        arrives (interpolation can't). The flow is the one for the frame halfway between (t = 0.5 inside, whatever the
+        input says); f1 - f0 is the motion of content from img0 to img1, f1 and f0 pointing at img1 and img0."""
+        src0 = torch.cat([img0, self.encode(img0)], 1)
+        src1 = torch.cat([img1, self.encode(img1)], 1)
+        flow, _ = self._lean2_flow(src0, src1, t * 0.0 + 0.5)
+        motion = flow[:, 2:4] - flow[:, :2] - self.ext_bias
+        return self._warp(img1, -t * motion).clamp(0.0, 1.0)
+
     def _forward_lean2(self, src0: torch.Tensor, src1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Like lean, and the intermediate warps happen at the next block's size (the original warps at full size and
         then shrinks the result): only the last step warps at full size, and the flow never goes up to full size
         until then."""
+        flow, mask = self._lean2_flow(src0, src1, t)
+        if self.variant == "lean3":
+            flow = flow - self.bias
+        w0 = self._warp(src0[:, :3], flow[:, :2])
+        w1 = self._warp(src1[:, :3], flow[:, 2:4])
+        m = torch.sigmoid(mask)
+        return (w0 * m + w1 * (1 - m)).clamp(0.0, 1.0)
+
+    def _lean2_flow(self, src0: torch.Tensor, src1: torch.Tensor, t: torch.Tensor):
+        """lean2's flow network: (flow, mask) at full size, flow[:, :2] to src0 and flow[:, 2:4] to src1."""
         s0 = [_resize(src0, sz) for sz in self.sizes]
         s1 = [_resize(src1, sz) for sz in self.sizes]
         flow = mask = feat = None
@@ -134,13 +159,7 @@ class RifePair(nn.Module):
             mask, feat = tmp[:, 4:5], tmp[:, 5:]
             if i < 3:
                 mask, feat = _resize(mask, self.sizes[i + 1]), _resize(feat, self.sizes[i + 1])
-        flow, mask = _resize(flow, self.full), _resize(mask, self.full)
-        if self.variant == "lean3":
-            flow = flow - self.bias
-        w0 = self._warp(src0[:, :3], flow[:, :2])
-        w1 = self._warp(src1[:, :3], flow[:, 2:4])
-        m = torch.sigmoid(mask)
-        return (w0 * m + w1 * (1 - m)).clamp(0.0, 1.0)
+        return _resize(flow, self.full), _resize(mask, self.full)
 
     def _forward_lean(self, src0: torch.Tensor, src1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         flow = mask = feat = None
@@ -164,6 +183,8 @@ class RifePair(nn.Module):
         return (w0 * m + w1 * (1 - m)).clamp(0.0, 1.0)
 
     def forward(self, img0: torch.Tensor, img1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        if self.variant == "extrap":
+            return self._forward_extrap(img0, img1, t)
         if self.variant in ("lean", "lean2", "lean2g", "lean3"):
             fwd = self._forward_lean if self.variant == "lean" else self._forward_lean2
             return fwd(torch.cat([img0, self.encode(img0)], 1), torch.cat([img1, self.encode(img1)], 1), t)

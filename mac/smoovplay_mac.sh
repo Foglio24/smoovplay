@@ -38,7 +38,7 @@ trap 'clean' EXIT
 
 cd "$REPO" || exit 1
 # Prima il programma AI, che aspetta lo stream; poi chiaki-ng, che si collega alla PS5.
-"$PY" -W ignore -u mac/play.py --tap > "$LOGDIR/play.log" 2>&1 &
+"$PY" -W ignore -u mac/play.py --tap ${SMOOVPLAY_ARGS:-} > "$LOGDIR/play.log" 2>&1 &
 PLAY=$!
 # chiaki-ng parte solo quando il programma AI ha caricato il modello e aspetta lo stream: l'intestazione del codec
 # arriva una volta sola, all'inizio dello stream, e se manca l'immagine resta a 0 fps.

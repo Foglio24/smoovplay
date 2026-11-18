@@ -152,6 +152,21 @@ def is_cut(a: np.ndarray, b: np.ndarray) -> bool:
     return float(np.abs(ta - tb).mean()) > CUT_LEVEL
 
 
+def is_stale(base: float | None, newest_real: float, pts: float) -> bool:
+    """An extrapolated frame (drawn after the real frame `base`, to be shown at `pts`) goes back in time if a real frame
+    newer than its base is due at or before it: showing it would undo that real frame."""
+    return base is not None and base < newest_real <= pts
+
+
+def drop_stale(pending: list, pts: float) -> tuple[list, list]:
+    """A real frame at `pts` just arrived: (kept, dropped) of the pending (slot, due, base, pts) entries. Dropped are
+    the extrapolated ones drawn after an older real frame that fall at or after `pts`."""
+    keep, drop = [], []
+    for e in pending:
+        (drop if e[2] is not None and e[2] < pts <= e[3] else keep).append(e)
+    return keep, drop
+
+
 # ---------------------------------------------------------------------------------------------------- worker
 def worker(args, free_q, ready_q, ai_on, stop) -> None:
     """Reads the source in real time, draws the AI frames, and hands every frame over with its time."""
@@ -172,11 +187,13 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
         if n > 0 and args.test_blend:  # for testing without a Mac: a plain cross-fade
             class _Blend:
                 def interpolate(self, a, b, t):
+                    if args.mode == "extrap":
+                        return np.asarray(b)
                     return (np.asarray(a) * (1 - t) + np.asarray(b) * t).astype(np.uint8)
             rife = _Blend()
         elif n > 0:
             from rife_coreml import CoreMLRife
-            rife = CoreMLRife(w, h, scale, args.model)
+            rife = CoreMLRife(w, h, scale, "extrap" if args.mode == "extrap" else args.model)
             warm = Image.fromarray(np.zeros((h, w, 3), np.uint8))
             for _ in range(3):
                 rife.interpolate(warm, warm, 0.5)
@@ -206,6 +223,7 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
         prev = prev_img = None
         prev_pts = 0.0
         skipped = 0
+        gaps: deque = deque(maxlen=8)  # recent gaps between real frames: where an extrapolated frame falls in time
         for k, item in enumerate(src):
             if live:  # a real frame exists from the moment it arrived
                 frame, t_arr, damaged = item
@@ -228,8 +246,14 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
             if s is None:
                 return
             frames[s][:] = frame
-            ready_q.put(("frame", s, pts, False, (time.perf_counter() - t_body) * 1000))
+            ready_q.put(("frame", s, pts, False, (time.perf_counter() - t_body) * 1000, None))
+            if prev is not None and 0 < pts - prev_pts <= GAP_S:
+                gaps.append(pts - prev_pts)
             if rife is not None and prev is not None and ai_on.value and not damaged and not behind and not is_cut(prev, frame):
+                # extrap: the AI frame is a fraction t of ONE game frame after this one, in the game's time (the flow
+                # is the motion over one game frame), put where the game's pace says (the typical gap, not this
+                # arrival's jitter). The window drops it if a newer real frame turns out to come before it.
+                gap = sorted(gaps)[len(gaps) // 2] if gaps else 1.0 / fps
                 for j in range(1, n + 1):
                     t = j / (n + 1)
                     s = slot()
@@ -237,7 +261,11 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
                         return
                     a = time.perf_counter()
                     frames[s][:] = rife.interpolate(prev_img, img, t)
-                    ready_q.put(("frame", s, prev_pts + (pts - prev_pts) * t, True, (time.perf_counter() - a) * 1000))
+                    ms = (time.perf_counter() - a) * 1000
+                    if args.mode == "extrap":
+                        ready_q.put(("frame", s, pts + gap * t, True, ms, pts))
+                    else:
+                        ready_q.put(("frame", s, prev_pts + (pts - prev_pts) * t, True, ms, None))
             prev, prev_img, prev_pts = frame, img, pts
     except Exception:  # noqa: BLE001 - report it to the window process, which prints it
         ready_q.put(("error", traceback.format_exc()))
@@ -266,6 +294,11 @@ def main() -> None:
                          "lean3 = lean2 with the output offset corrected (14.3 ms; the AI frame no longer sits ~0.17 px "
                          "off the real frames, which showed as a tremble on still pictures)")
     ap.add_argument("--test-blend", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--mode", default="interp", choices=["interp", "extrap"],
+                    help="interp: the AI frame is drawn halfway between two real frames, so it needs the later one and "
+                         "the picture is shown ~60 ms late. extrap: it is drawn after the latest real frame from the "
+                         "motion between the last two: ~30 ms less delay, a little less exact (see "
+                         "scripts/extrapolation_probe.py)")
     ap.add_argument("--vsync", action="store_true",
                     help="wait for the screen's vsync on every loop, as before (the loop then runs at only ~100 a second "
                          "on macOS, however fast the screen is, and drops frames that fall in the same loop)")
@@ -360,11 +393,13 @@ def main() -> None:
         glfw.set_window_attrib(win, glfw.FLOATING, True)
 
     auto = a.delay is None and a.tap is not None  # live: the lowest delay the frames can keep up with
-    delay = 0.060 if auto else (80.0 if a.delay is None else a.delay) / 1000.0
+    delay = (0.040 if a.mode == "extrap" else 0.060) if auto else (80.0 if a.delay is None else a.delay) / 1000.0
     needs: deque = deque()  # (when, how long after its own time a frame was ready) over the last few seconds
     t_adapt = time.monotonic()
-    pending: list = []  # (slot, due time), earliest first
-    stats = {"shown": 0, "drop": 0, "late": 0, "ms": [], "body": [], "t": time.monotonic()}
+    pending: list = []  # (slot, due time, base real frame's pts if extrapolated, pts), earliest first
+    newest_real = -1.0  # pts of the newest real frame received
+    stats = {"shown": 0, "drop": 0, "late": 0, "stale": 0, "ms": [], "body": [], "t": time.monotonic()}
+    min_delay = 0.015 if a.mode == "extrap" else 0.030  # the floor of the adaptive delay
     have_frame = False
     try:
         while not glfw.window_should_close(win):
@@ -375,7 +410,11 @@ def main() -> None:
                     break
                 if msg[0] == "error":
                     raise RuntimeError(msg[1])
-                _, s, pts, is_ai, ms = msg
+                _, s, pts, is_ai, ms, base = msg
+                if is_stale(base, newest_real, pts):
+                    free_q.put(s)  # a real frame newer than its base comes first: it would go back in time
+                    stats["stale"] += 1
+                    continue
                 need = time.monotonic() - (t0 + pts)
                 needs.append((time.monotonic(), need))
                 due = t0 + pts + delay
@@ -385,7 +424,13 @@ def main() -> None:
                     stats["ms"].append(ms)
                 else:
                     stats["body"].append(ms)
-                pending.append((s, due))
+                    newest_real = max(newest_real, pts)
+                    keep, drop = drop_stale(pending, pts)
+                    for e in drop:
+                        free_q.put(e[0])
+                        stats["stale"] += 1
+                    pending[:] = keep
+                pending.append((s, due, base, pts))
                 pending.sort(key=lambda p: p[1])
 
             now = time.monotonic()
@@ -396,12 +441,12 @@ def main() -> None:
                     needs.popleft()
                 if len(needs) >= 30:
                     ns = sorted(n for _, n in needs)
-                    target = min(0.150, max(0.030, ns[int(len(ns) * 0.98)] + 0.006))
+                    target = min(0.150, max(min_delay, ns[int(len(ns) * 0.98)] + 0.006))
                     delay = target if target > delay else max(target, delay - 0.004 * (now - t_adapt))
                 t_adapt = now
             chosen = None
             while pending and pending[0][1] <= now:
-                s, _ = pending.pop(0)
+                s = pending.pop(0)[0]
                 if chosen is not None:
                     free_q.put(chosen)
                     stats["drop"] += 1
@@ -445,14 +490,15 @@ def main() -> None:
                 if ready:
                     rife += f" | ready {ready[len(ready) // 2] * 1000:.0f}/{ready[int(len(ready) * 0.9)] * 1000:.0f}/{ready[-1] * 1000:.0f} ms"
                 line = (f"{'AI ON ' if ai_on.value and n else 'AI OFF'} | {stats['shown'] / el:5.1f} fps shown | "
-                        f"{rife} | delay {delay * 1000:.0f} ms | late {stats['late']} | dropped {stats['drop']}")
+                        f"{rife} | delay {delay * 1000:.0f} ms | late {stats['late']} | dropped {stats['drop']}"
+                        + (f" | stale {stats['stale']}" if a.mode == "extrap" else ""))
                 glfw.set_window_title(win, f"SmoovPlay Mac prototype | {line}")
                 print(line, flush=True)
-                stats.update(shown=0, drop=0, late=0, ms=[], body=[], t=now)
+                stats.update(shown=0, drop=0, late=0, stale=0, ms=[], body=[], t=now)
     finally:
         stop.set()
-        for s, _ in pending:
-            free_q.put(s)
+        for e in pending:
+            free_q.put(e[0])
         del frames
         shm.close()
         glfw.terminate()
