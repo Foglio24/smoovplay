@@ -534,6 +534,7 @@ class ChiakiSource:
         self._last_idr = 0.0
         self._header_file = Path(tempfile.gettempdir()) / (tap_name.split("\\")[-1] + "-header.bin")
         self.decoder_kind = decoder
+        self.pix_fmt = "bgr24"  # what the software decoder converts to (the Mac prototype asks for "rgb24")
         t_end = time.perf_counter() + wait_s
         printed = False
         while not (h := self.tap.header()).live:
@@ -612,6 +613,7 @@ class ChiakiSource:
         held = -1           # the frame the reader waits at for the pipeline to be ready (see below)
         late = False
         t_join, told = 0.0, False
+        t_try = 0.0         # when this stream's decoder started
         sizes = SizeRepeatDetector()
         while not self._stop:
             self._beat = time.perf_counter()
@@ -648,7 +650,7 @@ class ChiakiSource:
                     import torch
                     torch.zeros(1, device="cuda")  # PyTorch's CUDA context, current on this thread for the decoder
                     on_gpu = True
-                dec, pending = self._new_decoder(codec), params
+                dec, pending, t_try = self._new_decoder(codec), params, time.perf_counter()
             if going and passed and params:
                 # Frames went by undecoded: ask the PS5 for a refresh frame and hold what comes out until the
                 # picture is whole again.
@@ -722,6 +724,10 @@ class ChiakiSource:
                 self._ask_idr()
                 continue
             if not frames:  # (a decoder that holds a frame back)
+                # Still no picture a second in: it joined mid-GOP ("Could not find ref", only a warning to FFmpeg) and a
+                # still screen sends no intra frame by itself, so ask for one (_ask_idr spaces the requests out).
+                if not decoded and time.perf_counter() - t_try > 1.0:
+                    self._ask_idr()
                 continue
             decoded = True
             new_hint = sizes.update(len(p.data), key)
@@ -752,7 +758,7 @@ class ChiakiSource:
                 self.convert.said = True
                 print(f"[chiaki] HDR: the stream is {self.convert.describe()}")
             return img
-        return cuda_frame_to_bgr(fr) if self.decoder_kind == "cuda" else fr.to_ndarray(format="bgr24")
+        return cuda_frame_to_bgr(fr) if self.decoder_kind == "cuda" else fr.to_ndarray(format=self.pix_fmt)
 
     def set_hdr(self, out: str | None, display_peak: float | None = None, why: str = "") -> None:
         """SmoovPlay's HDR setting (framegen/hdr.py), before the frames start: out "sdr8" (tone-mapped to SDR),

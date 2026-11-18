@@ -47,7 +47,7 @@ for _ in $(seq 1 180); do
     kill -0 "$PLAY" 2>/dev/null || { notify "Il programma AI si è fermato. Dettagli: $LOGDIR/play.log"; exit 1; }
     sleep 1
 done
-CHIAKI_FRAMETAP=1 "$CHIAKI" --exit-app-on-stream-exit stream "$PS5_NAME" "$PS5_HOST" > "$LOGDIR/chiaki.log" 2>&1 &
+CHIAKI_FRAMETAP=1 "$CHIAKI" --opengl --exit-app-on-stream-exit stream "$PS5_NAME" "$PS5_HOST" > "$LOGDIR/chiaki.log" 2>&1 &
 CHI=$!
 
 # Finché girano tutti e due. Se chiaki-ng finisce (PS5 spenta, connessione persa) o chiudi la finestra AI (Q), si chiude tutto.

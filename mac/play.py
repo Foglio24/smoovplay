@@ -32,6 +32,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 RES = {"720p": (1280, 720), "1080p": (1920, 1080)}
 SLOTS = 10  # frames in flight between the two processes
+STILL_LEVEL = 0.35  # mean difference on a thumbnail below which two frames are the same picture
+LATE_S = 0.040  # a real frame older than this when the AI would start can't get its AI frame out in time: skipped
 CUT_LEVEL = 35.0  # mean difference (0..255) on a thumbnail above which two frames are a scene cut: no AI frame
 
 
@@ -93,8 +95,10 @@ class TapSource:
         sys.path.insert(0, str(ROOT))
         from framegen.chiaki_tap import NAME, ChiakiSource
         self.src = ChiakiSource(decoder="sw", wait_s=wait_s, tap_name=name or NAME)
+        self.src.pix_fmt = "rgb24"  # decoded straight to RGB: no per-frame channel flip in this process
         self.w, self.h = self.src.w, self.src.h
         self.fps = 30.0  # the game's rate; the stream itself is 60 Hz
+        self.still = 0  # frames skipped as the same picture as the one before
 
     def __iter__(self):
         from framegen.io import Tick
@@ -104,11 +108,15 @@ class TapSource:
                 continue
             if tick.new_hint is False:  # a repeat of the frame before
                 continue
-            rgb = tick.frame[..., ::-1]
-            if tick.new_hint is None and prev is not None and np.abs(  # size said nothing: compare pictures
-                    rgb[::16, ::16].astype(np.int16) - prev).mean() < 0.5:
+            rgb = tick.frame
+            thumb = rgb[::16, ::16].astype(np.int16)
+            # On a near-still screen (a menu) every compressed frame is tiny, so the size says "new" for nearly all of
+            # them and the AI would have twice the frames it can do. A picture that hasn't changed is a repeat, and
+            # there is nothing to interpolate between two equal pictures anyway.
+            if prev is not None and np.abs(thumb - prev).mean() < STILL_LEVEL:
+                self.still += 1
                 continue
-            prev = rgb[::16, ::16].astype(np.int16)
+            prev = thumb
             yield rgb, tick.t_arrival, tick.damaged
 
     def close(self) -> None:
@@ -125,6 +133,7 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
     """Reads the source in real time, draws the AI frames, and hands every frame over with its time."""
     from multiprocessing import shared_memory
     shm = live_src = None
+    skipped = 0
     try:
         from PIL import Image
         live = args.tap is not None
@@ -172,6 +181,7 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
 
         prev = prev_img = None
         prev_pts = 0.0
+        skipped = 0
         for k, item in enumerate(src):
             if live:  # a real frame exists from the moment it arrived
                 frame, t_arr, damaged = item
@@ -183,8 +193,12 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
                     time.sleep(wait)
             if stop.is_set():
                 break
+            t_body = time.perf_counter()
             img = Image.fromarray(frame)
-            if rife is not None and prev is not None and ai_on.value and not damaged and not is_cut(prev, frame):
+            behind = live and time.monotonic() - (t0 + pts) > LATE_S
+            if behind:
+                skipped += 1
+            if rife is not None and prev is not None and ai_on.value and not damaged and not behind and not is_cut(prev, frame):
                 for j in range(1, n + 1):
                     t = j / (n + 1)
                     s = slot()
@@ -197,12 +211,13 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
             if s is None:
                 return
             frames[s][:] = frame
-            ready_q.put(("frame", s, pts, False, 0.0))
+            ready_q.put(("frame", s, pts, False, (time.perf_counter() - t_body) * 1000))  # real frames: the whole body
             prev, prev_img, prev_pts = frame, img, pts
     except Exception:  # noqa: BLE001 - report it to the window process, which prints it
         ready_q.put(("error", traceback.format_exc()))
     finally:
         if live_src is not None:
+            print(f"[smoovplay] same-picture frames skipped: {live_src.still}, AI frames skipped for being late: {skipped}")
             live_src.close()  # prints how many frames the reader dropped or skipped
         stop.wait(5)  # the window process must detach before the memory goes
         if shm is not None:
@@ -299,10 +314,12 @@ def main() -> None:
             state["full"] = not state["full"]
 
     glfw.set_key_callback(win, on_key)
+    if a.tap is not None:  # chiaki-ng's own window is open behind: ours stays in front of it
+        glfw.set_window_attrib(win, glfw.FLOATING, True)
 
     delay = a.delay / 1000.0
     pending: deque = deque()
-    stats = {"shown": 0, "drop": 0, "late": 0, "ms": [], "t": time.monotonic()}
+    stats = {"shown": 0, "drop": 0, "late": 0, "ms": [], "body": [], "t": time.monotonic()}
     have_frame = False
     try:
         while not glfw.window_should_close(win):
@@ -319,6 +336,8 @@ def main() -> None:
                     stats["late"] += 1  # arrived after its time: the AI frame took too long
                 if is_ai:
                     stats["ms"].append(ms)
+                else:
+                    stats["body"].append(ms)
                 pending.append((s, due))
 
             now = time.monotonic()
@@ -355,11 +374,14 @@ def main() -> None:
             if el >= 1.0:
                 ms = sorted(stats["ms"])
                 rife = f"AI frame {ms[len(ms) // 2]:.1f} ms" if ms else "AI off"
+                bd = sorted(stats["body"])
+                if bd:
+                    rife += f" | per frame {bd[len(bd) // 2]:.1f}/{bd[-1]:.0f} ms"
                 line = (f"{'AI ON ' if ai_on.value and n else 'AI OFF'} | {stats['shown'] / el:5.1f} fps shown | "
                         f"{rife} | late {stats['late']} | dropped {stats['drop']}")
                 glfw.set_window_title(win, f"SmoovPlay Mac prototype | {line}")
                 print(line, flush=True)
-                stats.update(shown=0, drop=0, late=0, ms=[], t=now)
+                stats.update(shown=0, drop=0, late=0, ms=[], body=[], t=now)
     finally:
         stop.set()
         for s, _ in pending:

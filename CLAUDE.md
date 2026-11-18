@@ -86,6 +86,16 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      codec arriva una volta sola e, se il modello si carica dopo, l'immagine resta a 0 fps. Per questo in modalità `--tap`
      il modello si carica prima di aspettare lo stream (risoluzione da `--res`, default 1080p).
      Attenzione: `pkill -f` con il nome dello script dentro il comando uccide la propria shell.
+   - **Qualità (18/11/2026, dopo il primo giro con l'app)**: trovati e corretti (1) la finestra di chiaki-ng stava SOPRA
+     quella AI, con il suo avviso "Renderer Fallback": ora `chiaki --opengl` e la finestra AI è `FLOATING`; (2) il
+     lettore scartava migliaia di fotogrammi decodificati (3206 in una sessione) perché su schermi quasi fermi (menu) la
+     dimensione dei pacchetti dice "nuovo" per quasi tutti: ora si saltano i fotogrammi con miniatura uguale
+     (`STILL_LEVEL`) e si salta l'AI per i fotogrammi già vecchi (`LATE_S`); (3) il decoder non si riprendeva se entrava a
+     metà GOP ("Could not find ref"): ora chiede un keyframe se dopo 1 s non esce nessuna immagine; (4) conversione
+     diretta a RGB nel lettore (`ChiakiSource.pix_fmt`), niente più flip per fotogramma: corpo del ciclo 24,3 ms.
+     Aperto: in gioco ~56-60 fps mostrati, late 0, ma `dropped` ~17-23/s (fotogrammi che cadono nello stesso tick di
+     schermo a 240 Hz): serve un ritmo di presentazione regolare. Qualità dell'immagine in sé (bitrate H.265 di chiaki-ng,
+     RIFE a movimento dimezzato, artefatti) non ancora valutata a occhio.
    - **Da fare**: ~~provare con la PS5 vera~~ fatto, ora ritmo/ritardo (punto 2); era: provare con la PS5 vera (Luca): abilitare Remote Play sulla PS5, registrarla in chiaki-ng, scegliere
      1080p, 60 fps, H.265; poi `bash run_play.sh --tap` PRIMA di connettere. Misurare fps mostrati e ritardo. Il filtro "fotogramma nuovo" per giochi a 60 fps veri (menu) non è gestito in `play.py`.
 2. Ottimizzazioni: codificare ogni fotogramma reale una volta sola (oggi il modello codifica entrambi a ogni
