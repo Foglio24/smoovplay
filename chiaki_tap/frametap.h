@@ -4,7 +4,8 @@
 //
 // Enabled only when the environment variable CHIAKI_FRAMETAP=1 is set; otherwise every call is a no-op.
 // CHIAKI_FRAMETAP_NAME, if set, replaces the shared memory's name (tests run beside a real stream that way).
-// Windows only (named file mapping + named event); a no-op elsewhere.
+// Windows: named file mapping + named event. macOS/Linux: POSIX shared memory (shm_open, "Local\chiaki-frametap"
+// becomes "/chiaki-frametap"), times in nanoseconds of the monotonic clock (qpc_freq 1e9), and no event: the reader polls.
 //
 // Layout (all little-endian, must match framegen/chiaki_tap.py):
 //   header, 4096 bytes:

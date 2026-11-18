@@ -31,7 +31,7 @@ Other apps can write the same shared memory, compressed or decoded frames: see [
 
 | | |
 |---|---|
-| `frametap.c`, `frametap.h` | the tap's shared memory, compiled into chiaki-ng (Windows; a no-op elsewhere). Does nothing unless `CHIAKI_FRAMETAP=1` |
+| `frametap.c`, `frametap.h` | the tap's shared memory, compiled into chiaki-ng (Windows: file mapping + event; macOS/Linux: `shm_open`, the reader polls). Does nothing unless `CHIAKI_FRAMETAP=1` |
 | `frametap_session.cpp`, `frametap_session.h` | what the tap does inside chiaki-ng's StreamSession: copying frames and sound out, keyframe requests, the delay test's presses, the sound delay |
 | `apply_patch.py` | adds the tap to a chiaki-ng checkout: copies the files above in, then one-line edits to chiaki-ng's own files (six calls in streamsession.cpp, a friend line in streamsession.h, the files in CMakeLists.txt). It fails loudly if chiaki-ng moved the code, and refuses a checkout with an older tap patch: `git checkout -- gui/src/streamsession.cpp gui/CMakeLists.txt` first |
 | `selftest.py`, `selftest.c` | builds a small writer with MSYS2's gcc and checks it against the Python reader byte for byte, including the press, the sound delay and the sound ring. Uses its own tap name, so it runs while chiaki-ng streams |

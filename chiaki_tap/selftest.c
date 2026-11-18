@@ -7,11 +7,18 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
 #include <windows.h>
+#define SET_ENV(k, v) _putenv(k "=" v)
+#else
+#include <unistd.h>
+#define SET_ENV(k, v) setenv(k, v, 1)
+#define Sleep(ms) usleep((useconds_t)(ms) * 1000u)
+#endif
 
 int main(void)
 {
-	_putenv("CHIAKI_FRAMETAP=1");
+	SET_ENV("CHIAKI_FRAMETAP", "1");
 	if(!frametap_enabled() || !frametap_begin(1, 1920, 1080, 60))
 	{
 		fprintf(stderr, "frametap_begin failed\n");
