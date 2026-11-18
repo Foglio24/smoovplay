@@ -152,7 +152,7 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
             rife = _Blend()
         elif n > 0:
             from rife_coreml import CoreMLRife
-            rife = CoreMLRife(w, h, scale)
+            rife = CoreMLRife(w, h, scale, args.model)
             warm = Image.fromarray(np.zeros((h, w, 3), np.uint8))
             for _ in range(3):
                 rife.interpolate(warm, warm, 0.5)
@@ -236,6 +236,9 @@ def main() -> None:
     ap.add_argument("--motion", default="auto", choices=["auto", "full", "half"])
     ap.add_argument("--tap", nargs="?", const="", default=None, metavar="NAME",
                     help="live from the frame tap (default name Local\\chiaki-frametap) instead of a video")
+    ap.add_argument("--model", default="lean2", choices=["base", "fold", "lean", "lean2"],
+                    help="Core ML graph: base = as first converted (21.8 ms at 1080p), lean = no full-size round trip "
+                         "(17.5 ms, 66 dB from base), lean2 = also warps at block sizes (14.2 ms, 46-48 dB from base)")
     ap.add_argument("--test-blend", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--delay", type=float, default=None,
                     help="ms from a frame's arrival to the screen (default: 80 for a video; with --tap it adapts, "

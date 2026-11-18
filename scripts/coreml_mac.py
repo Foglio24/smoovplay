@@ -43,11 +43,39 @@ def _resize(t: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
     return t if tuple(t.shape[2:]) == size else F.interpolate(t, size=size, mode="bilinear", align_corners=False)
 
 
-class RifePair(nn.Module):
-    """framegen/fastrife.py's forward as a plain module (no channels_last, timestep as an input)."""
+class ResFolded(nn.Module):
+    """ResConv with its per-channel `beta` folded into the convolution: relu(conv(x) * beta + x) is
+    relu(conv'(x) + x) with the weights and bias of each output channel times beta. The same maths, 32 fewer
+    full-tensor multiplications in the graph."""
 
-    def __init__(self, scale: float, ph: int, pw: int) -> None:
+    def __init__(self, res: nn.Module) -> None:
         super().__init__()
+        c = res.conv
+        beta = res.beta.detach().view(-1)
+        self.conv = nn.Conv2d(c.in_channels, c.out_channels, c.kernel_size, c.stride, c.padding, c.dilation)
+        with torch.no_grad():
+            self.conv.weight.copy_(c.weight * beta.view(-1, 1, 1, 1))
+            self.conv.bias.copy_(c.bias * beta)
+        self.relu = nn.LeakyReLU(0.2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(self.conv(x) + x)
+
+
+VARIANTS = ("base", "fold", "lean", "lean2")  # base: as converted first; fold: beta folded (exact); lean: fold + no full-size round trip
+
+
+class RifePair(nn.Module):
+    """framegen/fastrife.py's forward as a plain module (no channels_last, timestep as an input).
+
+    variant "fold" folds each ResConv's beta into its convolution (the same result). "lean" also stops carrying mask and
+    features through full resolution: the block's output is resized once to the next block's size (and only the flow,
+    which the warps need, goes up to full size), an approximation of the resize-up-then-down the original does."""
+
+    def __init__(self, scale: float, ph: int, pw: int, variant: str = "base") -> None:
+        super().__init__()
+        assert variant in VARIANTS, variant
+        self.variant = variant
         state = torch.load(ensure_weights("4.22.lite"), map_location="cpu", weights_only=True)
         state = {k.replace("module.", ""): v for k, v in state.items() if k.startswith("module.")}
         net = rife_mod.IFNet(scale=scale)
@@ -55,6 +83,9 @@ class RifePair(nn.Module):
         self.encode = rife_mod.Head()
         self.encode.load_state_dict({k[len("encode."):]: v for k, v in state.items() if k.startswith("encode.")})
         self.blocks = nn.ModuleList([getattr(net, f"block{i}") for i in range(4)])
+        if variant != "base":
+            for blk in self.blocks:
+                blk.convblock = nn.Sequential(*[ResFolded(r) for r in blk.convblock])
         self.scales = list(net.scale_list)
         gx = torch.linspace(-1.0, 1.0, pw).view(1, 1, pw).expand(1, ph, pw)
         gy = torch.linspace(-1.0, 1.0, ph).view(1, ph, 1).expand(1, ph, pw)
@@ -62,12 +93,73 @@ class RifePair(nn.Module):
         self.register_buffer("flow_to_grid", torch.tensor([2.0 / (pw - 1), 2.0 / (ph - 1)]))
         self.full = (ph, pw)
         self.sizes = [(int(ph / s), int(pw / s)) for s in self.scales]
+        for k, (sh, sw) in enumerate(self.sizes):  # the same normalised grid at each block's size (lean2 warps there)
+            gx = torch.linspace(-1.0, 1.0, sw).view(1, 1, sw).expand(1, sh, sw)
+            gy = torch.linspace(-1.0, 1.0, sh).view(1, sh, 1).expand(1, sh, sw)
+            self.register_buffer(f"grid{k}", torch.stack([gx, gy], dim=-1).contiguous())
 
     def _warp(self, src: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
         grid = flow.permute(0, 2, 3, 1) * self.flow_to_grid + self.base_grid
         return F.grid_sample(src, grid, mode="bilinear", padding_mode="border", align_corners=True)
 
+    def _warp_k(self, src: torch.Tensor, flow: torch.Tensor, k: int) -> torch.Tensor:
+        """Warp at block k's size: the flow is in full-resolution pixels, and a displacement in normalised coordinates
+        is the same at any size."""
+        grid = flow.permute(0, 2, 3, 1) * self.flow_to_grid + getattr(self, f"grid{k}")
+        return F.grid_sample(src, grid, mode="bilinear", padding_mode="border", align_corners=True)
+
+    def _forward_lean2(self, src0: torch.Tensor, src1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """Like lean, and the intermediate warps happen at the next block's size (the original warps at full size and
+        then shrinks the result): only the last step warps at full size, and the flow never goes up to full size
+        until then."""
+        s0 = [_resize(src0, sz) for sz in self.sizes]
+        s1 = [_resize(src1, sz) for sz in self.sizes]
+        flow = mask = feat = None
+        for i, (blk, s, sz) in enumerate(zip(self.blocks, self.scales, self.sizes)):
+            if flow is None:
+                a, b = s0[0], s1[0]
+                parts = [a[:, :3], b[:, :3], a[:, 3:], b[:, 3:], t.expand(1, 1, sz[0], sz[1])]
+            else:
+                fl = _resize(flow, sz)
+                a, b = self._warp_k(s0[i], fl[:, :2], i), self._warp_k(s1[i], fl[:, 2:4], i)
+                parts = [a[:, :3], b[:, :3], a[:, 3:], b[:, 3:], t.expand(1, 1, sz[0], sz[1]), mask, feat, fl / s]
+            tmp = blk.lastconv(blk.convblock(blk.conv0(torch.cat(parts, 1))))
+            fd = tmp[:, :4] * s
+            flow = fd if flow is None else fl + fd
+            mask, feat = tmp[:, 4:5], tmp[:, 5:]
+            if i < 3:
+                mask, feat = _resize(mask, self.sizes[i + 1]), _resize(feat, self.sizes[i + 1])
+        flow, mask = _resize(flow, self.full), _resize(mask, self.full)
+        w0 = self._warp(src0[:, :3], flow[:, :2])
+        w1 = self._warp(src1[:, :3], flow[:, 2:4])
+        m = torch.sigmoid(mask)
+        return (w0 * m + w1 * (1 - m)).clamp(0.0, 1.0)
+
+    def _forward_lean(self, src0: torch.Tensor, src1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        flow = mask = feat = None
+        w0, w1 = src0, src1
+        for i, (blk, s, sz) in enumerate(zip(self.blocks, self.scales, self.sizes)):
+            a, b = _resize(w0, sz), _resize(w1, sz)
+            ts = t.expand(1, 1, sz[0], sz[1])
+            parts = [a[:, :3], b[:, :3], a[:, 3:], b[:, 3:], ts]
+            if flow is not None:
+                parts += [_resize(mask, sz), _resize(feat, sz), _resize(flow, sz) / s]
+            tmp = blk.lastconv(blk.convblock(blk.conv0(torch.cat(parts, 1))))  # at this block's size
+            fd = _resize(tmp[:, :4], self.full) * s  # only the flow goes up to full size (the warps need it there)
+            flow = fd if flow is None else flow + fd
+            mask, feat = tmp[:, 4:5], tmp[:, 5:]
+            nxt = self.sizes[i + 1] if i < 3 else self.full
+            mask, feat = _resize(mask, nxt), _resize(feat, nxt)  # straight to the next block's size
+            last = i == 3
+            w0 = self._warp(src0[:, :3] if last else src0, flow[:, :2])
+            w1 = self._warp(src1[:, :3] if last else src1, flow[:, 2:4])
+        m = torch.sigmoid(mask)
+        return (w0 * m + w1 * (1 - m)).clamp(0.0, 1.0)
+
     def forward(self, img0: torch.Tensor, img1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        if self.variant in ("lean", "lean2"):
+            fwd = self._forward_lean if self.variant == "lean" else self._forward_lean2
+            return fwd(torch.cat([img0, self.encode(img0)], 1), torch.cat([img1, self.encode(img1)], 1), t)
         src0 = torch.cat([img0, self.encode(img0)], 1)
         src1 = torch.cat([img1, self.encode(img1)], 1)
         flow = mask = feat = None

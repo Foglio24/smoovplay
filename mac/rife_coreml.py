@@ -18,7 +18,7 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
-from coreml_mac import MODULO, RifePair  # noqa: E402  the forward pass, checked against vs-rife there
+from coreml_mac import MODULO, RifePair, VARIANTS  # noqa: E402  the forward pass, checked against vs-rife there
 
 MODEL_DIR = ROOT / "models" / "coreml"
 
@@ -31,10 +31,10 @@ def padded(w: int, h: int, scale: float) -> tuple[int, int]:
 class RifeImages(nn.Module):
     """(img0, img1) as (1,3,h,w) 0..1 RGB, t (1,1,1,1) -> (1,3,h,w) 0..255."""
 
-    def __init__(self, w: int, h: int, scale: float) -> None:
+    def __init__(self, w: int, h: int, scale: float, variant: str = "base") -> None:
         super().__init__()
         pw, ph = padded(w, h, scale)
-        self.core = RifePair(scale, ph, pw)
+        self.core = RifePair(scale, ph, pw, variant)
         self.pad = (0, pw - w, 0, ph - h)
         self.w, self.h = w, h
 
@@ -44,20 +44,22 @@ class RifeImages(nn.Module):
         return self.core(img0, img1, t)[:, :, : self.h, : self.w] * 255.0
 
 
-def model_path(w: int, h: int, scale: float) -> Path:
-    return MODEL_DIR / f"rife422lite_img_{w}x{h}_{'full' if scale == 1.0 else 'half'}.mlpackage"
+def model_path(w: int, h: int, scale: float, variant: str = "base") -> Path:
+    # A changed graph needs its own name: an existing package is reused as it is.
+    tag = "" if variant == "base" else f"_{variant}"
+    return MODEL_DIR / f"rife422lite_img_{w}x{h}_{'full' if scale == 1.0 else 'half'}{tag}.mlpackage"
 
 
-def convert(w: int, h: int, scale: float) -> Path:
-    """Build (once) and return the .mlpackage for this frame size and motion detail."""
-    path = model_path(w, h, scale)
+def convert(w: int, h: int, scale: float, variant: str = "base") -> Path:
+    """Build (once) and return the .mlpackage for this frame size, motion detail and variant."""
+    path = model_path(w, h, scale, variant)
     if path.exists():
         return path
     import coremltools as ct
     import numpy as np
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     print(f"[coreml] building {path.name} (first time only, about a minute)...", flush=True)
-    model = RifeImages(w, h, scale).eval()
+    model = RifeImages(w, h, scale, variant).eval()
     ex = (torch.rand(1, 3, h, w), torch.rand(1, 3, h, w), torch.full((1, 1, 1, 1), 0.5))
     with torch.no_grad():
         traced = torch.jit.trace(model, ex)
@@ -81,11 +83,11 @@ def convert(w: int, h: int, scale: float) -> Path:
 class CoreMLRife:
     """Draws in-between frames on the GPU. Frames are HxWx3 uint8 RGB NumPy arrays."""
 
-    def __init__(self, w: int, h: int, scale: float) -> None:
+    def __init__(self, w: int, h: int, scale: float, variant: str = "base") -> None:
         import coremltools as ct
         import numpy as np
         self._np = np
-        self.model = ct.models.MLModel(str(convert(w, h, scale)), compute_units=ct.ComputeUnit.CPU_AND_GPU)
+        self.model = ct.models.MLModel(str(convert(w, h, scale, variant)), compute_units=ct.ComputeUnit.CPU_AND_GPU)
         self._t = {}
 
     def interpolate(self, img0, img1, t: float):

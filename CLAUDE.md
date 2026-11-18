@@ -107,7 +107,16 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      BT.709 (differenza 0,27 su 255 contro 7,05 con BT.601). Se l'immagine appare "strana", la causa non è la matrice colore.
    - **Da fare**: ~~provare con la PS5 vera~~ fatto, ora ritmo/ritardo (punto 2); era: provare con la PS5 vera (Luca): abilitare Remote Play sulla PS5, registrarla in chiaki-ng, scegliere
      1080p, 60 fps, H.265; poi `bash run_play.sh --tap` PRIMA di connettere. Misurare fps mostrati e ritardo. Il filtro "fotogramma nuovo" per giochi a 60 fps veri (menu) non è gestito in `play.py`.
-2. Ottimizzazioni: codificare ogni fotogramma reale una volta sola (oggi il modello codifica entrambi a ogni
-   chiamata), passare i fotogrammi come CVPixelBuffer/IOSurface invece che PIL, tarare il ritardo (oggi 80 ms).
+2. Ottimizzazioni. FATTO (18/11/2026): modello Core ML più leggero. Misurato (Apple M5 Pro, 1080p half, fotogrammi reali):
+   `base` 21,8 ms; `fold` (beta fuso nei pesi) 21,8 ms, identico: Core ML lo faceva già, la stima dei costi di
+   `MLComputePlan` non è un profilo reale; `lean` 17,5 ms (nessun giro a piena risoluzione di maschera/feature, solo il
+   flusso sale a piena risoluzione) con 65-67 dB da `base`; `lean2` 14,2 ms (anche i warp intermedi alla risoluzione del
+   blocco successivo, solo l'ultimo a piena) con 45,6-47,7 dB da `base`. Predefinito `--model lean2`; modelli in
+   `models/coreml/*_lean2.mlpackage` (nome con suffisso: un pacchetto esistente con lo stesso nome viene riusato, quindi un
+   grafo cambiato ha bisogno di un nome nuovo). In-app con la PS5 finta: fotogramma AI 15,5 ms (era 24), ritardo
+   adattivo ~60 ms (era 76-87). Codificare ogni fotogramma una volta sola NON serve: l'encoder è ~5% del lavoro
+   (~0,5 ms), l'avevo stimato male. Il costo vero è lo spostamento dati (slice, resize, warp), non le convoluzioni
+   (~7-15%). Non provati: 720p, `--mult 3`, e giochi reali a ~37 fps con lean2.
+   Ancora da fare: CVPixelBuffer/IOSurface (le conversioni PIL costano <1 ms: poco da guadagnare).
 3. Upscaling con MetalFX (o FSR 1 come shader) e presentazione con Metal.
 4. Tenere il lavoro su un branch git (es. `macos-port`), utile per un'eventuale PR upstream.
