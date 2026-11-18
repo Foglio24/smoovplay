@@ -393,8 +393,10 @@ def summary(rows: list[dict]) -> str:
     tm = nums(play, "temp_max_c")
     if tm:
         out.append(f"Die temperature: max {max(tm):.1f} C, mean of the per-second max {statistics.fmean(tm):.1f} C.")
+    # after the warm-up, and not the last seconds (play.py shutting down frees memory before it exits)
     mem = [(r["t_s"], (r.get("mem_play_main_mb") or 0) + (r.get("mem_play_children_mb") or 0))
-           for r in play if r["t_s"] - t0 >= WARMUP_S and r.get("mem_play_main_mb")]
+           for r in play if r["t_s"] - t0 >= WARMUP_S and r["t_s"] <= play[-1]["t_s"] - 5
+           and r.get("mem_play_main_mb")]
     if len(mem) > 30:
         xs, ys = [m[0] / 60 for m in mem], [m[1] for m in mem]
         mx, my = statistics.fmean(xs), statistics.fmean(ys)
