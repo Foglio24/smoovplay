@@ -47,7 +47,8 @@ class RifeImages(nn.Module):
 def model_path(w: int, h: int, scale: float, variant: str = "base") -> Path:
     # A changed graph needs its own name: an existing package is reused as it is.
     tag = "" if variant == "base" else f"_{variant}"
-    return MODEL_DIR / f"rife422lite_img_{w}x{h}_{'full' if scale == 1.0 else 'half'}{tag}.mlpackage"
+    name = {1.0: "full", 0.5: "half"}.get(scale, f"s{scale:g}")  # (full and half keep their old names)
+    return MODEL_DIR / f"rife422lite_img_{w}x{h}_{name}{tag}.mlpackage"
 
 
 def convert(w: int, h: int, scale: float, variant: str = "base") -> Path:
