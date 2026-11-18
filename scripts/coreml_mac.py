@@ -62,7 +62,7 @@ class ResFolded(nn.Module):
         return self.relu(self.conv(x) + x)
 
 
-VARIANTS = ("base", "fold", "lean", "lean2")  # base: as converted first; fold: beta folded (exact); lean: fold + no full-size round trip
+VARIANTS = ("base", "fold", "lean", "lean2", "lean2g", "lean3")  # a trailing "g": the warp grids in 32-bit (see grid_precision)  # base: as converted first; fold: beta folded (exact); lean: fold + no full-size round trip
 
 
 class RifePair(nn.Module):
@@ -91,6 +91,11 @@ class RifePair(nn.Module):
         gy = torch.linspace(-1.0, 1.0, ph).view(1, ph, 1).expand(1, ph, pw)
         self.register_buffer("base_grid", torch.stack([gx, gy], dim=-1).contiguous())
         self.register_buffer("flow_to_grid", torch.tensor([2.0 / (pw - 1), 2.0 / (ph - 1)]))
+        # RIFE 4.22 lite's output sits a little off the real frames even on a still picture or a pure translation
+        # (measured on 1080p: about 0.17 px up and 0.05-0.1 px left, the same everywhere in the image and whatever the
+        # motion). Alternating with the real frames that shows as a tremble. "lean3" samples that much further down and
+        # right at the last step (flow_x/flow_y are in full-size pixels).
+        self.register_buffer("bias", torch.tensor([0.05, 0.17, 0.05, 0.17]).view(1, 4, 1, 1))
         self.full = (ph, pw)
         self.sizes = [(int(ph / s), int(pw / s)) for s in self.scales]
         for k, (sh, sw) in enumerate(self.sizes):  # the same normalised grid at each block's size (lean2 warps there)
@@ -130,6 +135,8 @@ class RifePair(nn.Module):
             if i < 3:
                 mask, feat = _resize(mask, self.sizes[i + 1]), _resize(feat, self.sizes[i + 1])
         flow, mask = _resize(flow, self.full), _resize(mask, self.full)
+        if self.variant == "lean3":
+            flow = flow - self.bias
         w0 = self._warp(src0[:, :3], flow[:, :2])
         w1 = self._warp(src1[:, :3], flow[:, 2:4])
         m = torch.sigmoid(mask)
@@ -157,7 +164,7 @@ class RifePair(nn.Module):
         return (w0 * m + w1 * (1 - m)).clamp(0.0, 1.0)
 
     def forward(self, img0: torch.Tensor, img1: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        if self.variant in ("lean", "lean2"):
+        if self.variant in ("lean", "lean2", "lean2g", "lean3"):
             fwd = self._forward_lean if self.variant == "lean" else self._forward_lean2
             return fwd(torch.cat([img0, self.encode(img0)], 1), torch.cat([img1, self.encode(img1)], 1), t)
         src0 = torch.cat([img0, self.encode(img0)], 1)
@@ -180,6 +187,35 @@ class RifePair(nn.Module):
             w1 = self._warp(src1[:, :3] if last else src1, flow[:, 2:4])
         m = torch.sigmoid(mask)
         return (w0 * m + w1 * (1 - m)).clamp(0.0, 1.0)
+
+
+def grid_precision():
+    """Core ML precision rule for the "g" variants: everything in float16 except the warps. A sampling position is
+    base grid (-1..1) + flow in normalised units; in float16 that has a resolution of about 0.0005 near the edges,
+    which is 0.25-0.5 px of a 1080p picture, so the AI frame came out with a row-dependent position error (up to ~0.3
+    px) and, alternating with the real frames, the picture trembled. The ops that make the sampling positions and the
+    resample ops stay in float32."""
+    import coremltools as ct
+
+    def selector(op) -> bool:  # True: this op may run in float16
+        keep = getattr(selector, "keep", None)
+        if keep is None:
+            keep = set()
+            for o in op.enclosing_block.operations:
+                if o.op_type != "resample":
+                    continue
+                keep.add(id(o))
+                stack, depth = [(o.coordinates.op, 1)], 0
+                while stack:  # back from the sampling positions through add, mul and transpose only
+                    cur, depth = stack.pop()
+                    if cur is None or cur.op_type not in ("add", "mul", "transpose", "cast") or depth > 4:
+                        continue
+                    keep.add(id(cur))
+                    stack += [(v.op, depth + 1) for v in cur.inputs.values() if hasattr(v, "op")]
+            selector.keep = keep
+        return id(op) not in keep
+
+    return ct.transform.FP16ComputePrecision(op_selector=selector)
 
 
 def padded(w: int, h: int, scale: float) -> tuple[int, int]:

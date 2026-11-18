@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RES = {"720p": (1280, 720), "1080p": (1920, 1080)}
 SLOTS = 10  # frames in flight between the two processes
 STILL_LEVEL = 0.35  # mean difference on a thumbnail below which two frames are the same picture
+GAP_S = 0.09  # frames further apart than this (a still screen that started moving) get no AI frame between them
 LATE_S = 0.026  # a real frame older than this when the AI would start can't get its AI frame out in time: skipped
 CUT_LEVEL = 35.0  # mean difference (0..255) on a thumbnail above which two frames are a scene cut: no AI frame
 
@@ -195,7 +196,7 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
                 break
             t_body = time.perf_counter()
             img = Image.fromarray(frame)
-            behind = live and time.monotonic() - (t0 + pts) > LATE_S
+            behind = live and (time.monotonic() - (t0 + pts) > LATE_S or pts - prev_pts > GAP_S)
             if behind:
                 skipped += 1
             # The real frame goes out first: it's due at its own time and needn't wait for the AI frame, which falls
@@ -236,9 +237,11 @@ def main() -> None:
     ap.add_argument("--motion", default="auto", choices=["auto", "full", "half"])
     ap.add_argument("--tap", nargs="?", const="", default=None, metavar="NAME",
                     help="live from the frame tap (default name Local\\chiaki-frametap) instead of a video")
-    ap.add_argument("--model", default="lean2", choices=["base", "fold", "lean", "lean2"],
+    ap.add_argument("--model", default="lean3", choices=["base", "fold", "lean", "lean2", "lean2g", "lean3"],
                     help="Core ML graph: base = as first converted (21.8 ms at 1080p), lean = no full-size round trip "
-                         "(17.5 ms, 66 dB from base), lean2 = also warps at block sizes (14.2 ms, 46-48 dB from base)")
+                         "(17.5 ms, 66 dB from base), lean2 = also warps at block sizes (14.2 ms, 46-48 dB from base), "
+                         "lean3 = lean2 with the output offset corrected (14.3 ms; the AI frame no longer sits ~0.17 px "
+                         "off the real frames, which showed as a tremble on still pictures)")
     ap.add_argument("--test-blend", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--delay", type=float, default=None,
                     help="ms from a frame's arrival to the screen (default: 80 for a video; with --tap it adapts, "

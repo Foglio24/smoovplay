@@ -111,12 +111,21 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
    `base` 21,8 ms; `fold` (beta fuso nei pesi) 21,8 ms, identico: Core ML lo faceva già, la stima dei costi di
    `MLComputePlan` non è un profilo reale; `lean` 17,5 ms (nessun giro a piena risoluzione di maschera/feature, solo il
    flusso sale a piena risoluzione) con 65-67 dB da `base`; `lean2` 14,2 ms (anche i warp intermedi alla risoluzione del
-   blocco successivo, solo l'ultimo a piena) con 45,6-47,7 dB da `base`. Predefinito `--model lean2`; modelli in
+   blocco successivo, solo l'ultimo a piena) con 45,6-47,7 dB da `base`. Predefinito `--model lean3` (vedi sotto); modelli in
    `models/coreml/*_lean2.mlpackage` (nome con suffisso: un pacchetto esistente con lo stesso nome viene riusato, quindi un
    grafo cambiato ha bisogno di un nome nuovo). In-app con la PS5 finta: fotogramma AI 15,5 ms (era 24), ritardo
    adattivo ~60 ms (era 76-87). Codificare ogni fotogramma una volta sola NON serve: l'encoder è ~5% del lavoro
    (~0,5 ms), l'avevo stimato male. Il costo vero è lo spostamento dati (slice, resize, warp), non le convoluzioni
    (~7-15%). Non provati: 720p, `--mult 3`, e giochi reali a ~37 fps con lean2.
+   **Tremolio su immagini ferme (18/11/2026)**: il fotogramma AI risultava spostato di ~0,17 px in alto e ~0,05-0,1 px a
+   sinistra rispetto ai reali (misurato con traslazioni pure e con coppie identiche; costante in tutta l'immagine e con
+   qualsiasi movimento; già presente in PyTorch fp32, -0,12 px, quindi è del modello, non di Core ML; tenere le
+   coordinate di warp a 32 bit, variante `lean2g`, non cambia nulla e costa 1 ms). Alternato 30 volte al secondo con i
+   fotogrammi reali si vede come un tremolio. `lean3` = `lean2` + offset di campionamento (`RifePair.bias`) nell'ultimo
+   warp: errore residuo ~0,03 px, 14,3 ms, 44-46 dB da `base` (che ha lo stesso scarto). Inoltre `GAP_S` (90 ms): niente
+   fotogramma AI tra due fotogrammi lontani nel tempo (uno schermo fermo che riparte produceva un fotogramma "fantasma"
+   mescolato con uno vecchio di secondi). NON ancora provato dal vivo: prima dell'uso controllare a occhio su testo/HUD
+   fermi; l'offset si cambia in `RifePair.bias` (scripts/coreml_mac.py) e il pacchetto va rifatto con un nome nuovo.
    Ancora da fare: CVPixelBuffer/IOSurface (le conversioni PIL costano <1 ms: poco da guadagnare).
 3. Upscaling con MetalFX (o FSR 1 come shader) e presentazione con Metal.
 4. Tenere il lavoro su un branch git (es. `macos-port`), utile per un'eventuale PR upstream.

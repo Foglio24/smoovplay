@@ -18,7 +18,7 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
-from coreml_mac import MODULO, RifePair, VARIANTS  # noqa: E402  the forward pass, checked against vs-rife there
+from coreml_mac import MODULO, RifePair, VARIANTS, grid_precision  # noqa: E402  the forward pass, checked against vs-rife there
 
 MODEL_DIR = ROOT / "models" / "coreml"
 
@@ -72,7 +72,7 @@ def convert(w: int, h: int, scale: float, variant: str = "base") -> Path:
                 ct.TensorType("t", shape=ex[2].shape, dtype=np.float16)],
         outputs=[ct.ImageType("out", color_layout=rgb)],
         convert_to="mlprogram",
-        compute_precision=ct.precision.FLOAT16,
+        compute_precision=grid_precision() if variant.endswith("g") else ct.precision.FLOAT16,
         minimum_deployment_target=ct.target.macOS15,
     )
     tmp = path.with_suffix(".part.mlpackage")
