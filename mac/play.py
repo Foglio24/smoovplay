@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RES = {"720p": (1280, 720), "1080p": (1920, 1080)}
 SLOTS = 10  # frames in flight between the two processes
 STILL_LEVEL = 0.35  # mean difference on a thumbnail below which two frames are the same picture
-LATE_S = 0.040  # a real frame older than this when the AI would start can't get its AI frame out in time: skipped
+LATE_S = 0.026  # a real frame older than this when the AI would start can't get its AI frame out in time: skipped
 CUT_LEVEL = 35.0  # mean difference (0..255) on a thumbnail above which two frames are a scene cut: no AI frame
 
 
@@ -198,6 +198,13 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
             behind = live and time.monotonic() - (t0 + pts) > LATE_S
             if behind:
                 skipped += 1
+            # The real frame goes out first: it's due at its own time and needn't wait for the AI frame, which falls
+            # before it (halfway from the frame before) and so is the one that sets how short the delay can be.
+            s = slot()
+            if s is None:
+                return
+            frames[s][:] = frame
+            ready_q.put(("frame", s, pts, False, (time.perf_counter() - t_body) * 1000))
             if rife is not None and prev is not None and ai_on.value and not damaged and not behind and not is_cut(prev, frame):
                 for j in range(1, n + 1):
                     t = j / (n + 1)
@@ -207,11 +214,6 @@ def worker(args, free_q, ready_q, ai_on, stop) -> None:
                     a = time.perf_counter()
                     frames[s][:] = rife.interpolate(prev_img, img, t)
                     ready_q.put(("frame", s, prev_pts + (pts - prev_pts) * t, True, (time.perf_counter() - a) * 1000))
-            s = slot()
-            if s is None:
-                return
-            frames[s][:] = frame
-            ready_q.put(("frame", s, pts, False, (time.perf_counter() - t_body) * 1000))  # real frames: the whole body
             prev, prev_img, prev_pts = frame, img, pts
     except Exception:  # noqa: BLE001 - report it to the window process, which prints it
         ready_q.put(("error", traceback.format_exc()))
@@ -235,7 +237,9 @@ def main() -> None:
     ap.add_argument("--tap", nargs="?", const="", default=None, metavar="NAME",
                     help="live from the frame tap (default name Local\\chiaki-frametap) instead of a video")
     ap.add_argument("--test-blend", action="store_true", help=argparse.SUPPRESS)
-    ap.add_argument("--delay", type=float, default=80.0, help="ms from a frame's arrival to the screen")
+    ap.add_argument("--delay", type=float, default=None,
+                    help="ms from a frame's arrival to the screen (default: 80 for a video; with --tap it adapts, "
+                         "as low as the frames allow)")
     a = ap.parse_args()
     if a.source:
         a.source = str(Path(a.source).expanduser().resolve())
@@ -317,8 +321,11 @@ def main() -> None:
     if a.tap is not None:  # chiaki-ng's own window is open behind: ours stays in front of it
         glfw.set_window_attrib(win, glfw.FLOATING, True)
 
-    delay = a.delay / 1000.0
-    pending: deque = deque()
+    auto = a.delay is None and a.tap is not None  # live: the lowest delay the frames can keep up with
+    delay = 0.060 if auto else (80.0 if a.delay is None else a.delay) / 1000.0
+    needs: deque = deque()  # (when, how long after its own time a frame was ready) over the last few seconds
+    t_adapt = time.monotonic()
+    pending: list = []  # (slot, due time), earliest first
     stats = {"shown": 0, "drop": 0, "late": 0, "ms": [], "body": [], "t": time.monotonic()}
     have_frame = False
     try:
@@ -331,6 +338,8 @@ def main() -> None:
                 if msg[0] == "error":
                     raise RuntimeError(msg[1])
                 _, s, pts, is_ai, ms = msg
+                need = time.monotonic() - (t0 + pts)
+                needs.append((time.monotonic(), need))
                 due = t0 + pts + delay
                 if time.monotonic() > due + 0.5 / out_fps:
                     stats["late"] += 1  # arrived after its time: the AI frame took too long
@@ -339,11 +348,22 @@ def main() -> None:
                 else:
                     stats["body"].append(ms)
                 pending.append((s, due))
+                pending.sort(key=lambda p: p[1])
 
             now = time.monotonic()
+            if auto and now - t_adapt >= 0.25:
+                # The delay has to cover the slowest frames (their AI frame is ready late); up at once, down slowly so
+                # the spacing of the frames on screen doesn't visibly change.
+                while needs and needs[0][0] < now - 4.0:
+                    needs.popleft()
+                if len(needs) >= 30:
+                    ns = sorted(n for _, n in needs)
+                    target = min(0.150, max(0.030, ns[int(len(ns) * 0.98)] + 0.006))
+                    delay = target if target > delay else max(target, delay - 0.004 * (now - t_adapt))
+                t_adapt = now
             chosen = None
             while pending and pending[0][1] <= now:
-                s, _ = pending.popleft()
+                s, _ = pending.pop(0)
                 if chosen is not None:
                     free_q.put(chosen)
                     stats["drop"] += 1
@@ -377,8 +397,11 @@ def main() -> None:
                 bd = sorted(stats["body"])
                 if bd:
                     rife += f" | per frame {bd[len(bd) // 2]:.1f}/{bd[-1]:.0f} ms"
+                ready = sorted(nd for t_n, nd in needs if t_n > now - el)
+                if ready:
+                    rife += f" | ready {ready[len(ready) // 2] * 1000:.0f}/{ready[int(len(ready) * 0.9)] * 1000:.0f}/{ready[-1] * 1000:.0f} ms"
                 line = (f"{'AI ON ' if ai_on.value and n else 'AI OFF'} | {stats['shown'] / el:5.1f} fps shown | "
-                        f"{rife} | late {stats['late']} | dropped {stats['drop']}")
+                        f"{rife} | delay {delay * 1000:.0f} ms | late {stats['late']} | dropped {stats['drop']}")
                 glfw.set_window_title(win, f"SmoovPlay Mac prototype | {line}")
                 print(line, flush=True)
                 stats.update(shown=0, drop=0, late=0, ms=[], body=[], t=now)

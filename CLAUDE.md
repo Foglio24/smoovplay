@@ -96,6 +96,15 @@ Comandi: `bash run_play.sh` (demo 1080p→60), `bash run_play.sh --res 720p --mu
      Aperto: in gioco ~56-60 fps mostrati, late 0, ma `dropped` ~17-23/s (fotogrammi che cadono nello stesso tick di
      schermo a 240 Hz): serve un ritmo di presentazione regolare. Qualità dell'immagine in sé (bitrate H.265 di chiaki-ng,
      RIFE a movimento dimezzato, artefatti) non ancora valutata a occhio.
+   - **Cavo Ethernet (18/11/2026)**: con il Mac in Wi-Fi chiaki-ng misurava 8-11% di pacchetti persi, 438 fotogrammi
+     danneggiati e 140 correzioni FEC fallite (= glitch e micro-scatti); col cavo 0 e 0. Il Mac mini ha `en0` Ethernet.
+   - **Ritardo adattivo** (`--tap`, `--delay N` lo fissa): il ritardo segue il 98º percentile del tempo di "pronto" dei
+     fotogrammi (+6 ms, tra 30 e 150 ms; su veloce, giù 4 ms/s). Il fotogramma reale parte PRIMA di quello AI (`pending`
+     ordinato per scadenza). Con `LATE_S` = 26 ms: ritardo ~76 ms (era 80 fisso, 87 con `LATE_S` 40), 67-75 fps mostrati,
+     `dropped` ~14/s. Limite vero: GTA qui gira a ~37 fotogrammi nuovi/s e l'AI costa ~25 ms, cioè ~90% di un core
+     di calcolo; sotto ~70 ms serve un'AI più veloce (codificare ogni fotogramma una volta sola, punto 2).
+   - **HDR**: lo stream di chiaki-ng è H.265 SDR 8 bit, BT.709, range limitato (non HDR); la conversione di PyAV rispetta
+     BT.709 (differenza 0,27 su 255 contro 7,05 con BT.601). Se l'immagine appare "strana", la causa non è la matrice colore.
    - **Da fare**: ~~provare con la PS5 vera~~ fatto, ora ritmo/ritardo (punto 2); era: provare con la PS5 vera (Luca): abilitare Remote Play sulla PS5, registrarla in chiaki-ng, scegliere
      1080p, 60 fps, H.265; poi `bash run_play.sh --tap` PRIMA di connettere. Misurare fps mostrati e ritardo. Il filtro "fotogramma nuovo" per giochi a 60 fps veri (menu) non è gestito in `play.py`.
 2. Ottimizzazioni: codificare ogni fotogramma reale una volta sola (oggi il modello codifica entrambi a ogni
