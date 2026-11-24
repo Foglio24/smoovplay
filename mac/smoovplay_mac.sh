@@ -2,10 +2,14 @@
 # SmoovPlay per Mac: avvia il programma AI (mac/play.py --tap) e chiaki-ng con il frame tap, collegato alla PS5,
 # e chiude tutto quando finisce uno dei due. Lanciato dall'app SmoovPlay.app sul Desktop (mac/make_app.sh).
 #
-# Cambia qui sotto il nome e l'indirizzo della tua PS5 (si leggono nella schermata principale di chiaki-ng).
-PS5_NAME="${SMOOVPLAY_PS5_NAME:-PS5-590}"
-PS5_HOST="${SMOOVPLAY_PS5_HOST:-192.168.1.74}"
-CHIAKI="${SMOOVPLAY_CHIAKI:-$HOME/src/chiaki-ng/build/gui/chiaki.app/Contents/MacOS/chiaki}"
+# Nome e indirizzo della PS5 (si leggono nella schermata principale di chiaki-ng) stanno in ~/.smoovplay/config,
+# scritto da mac/install.sh. Le variabili SMOOVPLAY_PS5_NAME, SMOOVPLAY_PS5_HOST e SMOOVPLAY_CHIAKI hanno la precedenza.
+CONFIG="${SMOOVPLAY_CONFIG:-$HOME/.smoovplay/config}"
+_ENV_NAME="${SMOOVPLAY_PS5_NAME:-}" _ENV_HOST="${SMOOVPLAY_PS5_HOST:-}" _ENV_CHIAKI="${SMOOVPLAY_CHIAKI:-}"
+[ -f "$CONFIG" ] && . "$CONFIG"
+PS5_NAME="${_ENV_NAME:-${PS5_NAME:-}}"
+PS5_HOST="${_ENV_HOST:-${PS5_HOST:-}}"
+CHIAKI="${_ENV_CHIAKI:-${CHIAKI:-$HOME/src/chiaki-ng/build/gui/chiaki.app/Contents/MacOS/chiaki}}"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="$REPO/.venv-mac/bin/python"
@@ -15,8 +19,9 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 notify() { osascript -e "display dialog \"$1\" buttons {\"OK\"} default button 1 with title \"SmoovPlay\" with icon caution" >/dev/null 2>&1; }
 
-[ -x "$PY" ] || { notify "Manca l'ambiente Python (.venv-mac). Lancia prima bash run_bench.sh nella cartella smoovplay."; exit 1; }
-[ -x "$CHIAKI" ] || { notify "chiaki-ng non è compilato. Lancia: bash chiaki_tap/build_macos.sh ~/src/chiaki-ng"; exit 1; }
+[ -n "$PS5_NAME" ] && [ -n "$PS5_HOST" ] || { notify "Manca il nome o l'indirizzo della PS5. Lancia mac/install.sh, oppure scrivili in $CONFIG."; exit 1; }
+[ -x "$PY" ] || { notify "Manca l'ambiente Python (.venv-mac). Lancia mac/install.sh."; exit 1; }
+[ -x "$CHIAKI" ] || { notify "chiaki-ng non è compilato. Lancia mac/install.sh."; exit 1; }
 
 clean() {
     pkill -f "mac/play.py" 2>/dev/null

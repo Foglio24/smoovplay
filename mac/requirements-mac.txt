@@ -1,0 +1,10 @@
+# Python packages for SmoovPlay on macOS (Apple Silicon). Versions the player was tested with.
+torch==2.15.0
+coremltools==9.0
+numpy>=2
+opencv-python
+pillow
+av
+glfw
+PyOpenGL
+sounddevice

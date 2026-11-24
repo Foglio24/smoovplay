@@ -16,3 +16,4 @@ promo/
 notes/
 scripts/make_clips.py
 scripts/render_demo.py
+dist/
